@@ -4,6 +4,7 @@
   "description": "pi usage ledger and local browser dashboard (tokens, CNY cost, heatmap). Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
+  "author": "KaaNoo",
   "private": true,
   "keywords": [
     "pi-package",
@@ -17,6 +18,7 @@
       "./extensions/pi-monitor/index.ts"
     ]
   },
+  "dependencies": {},
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

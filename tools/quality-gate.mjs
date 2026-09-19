@@ -65,10 +65,23 @@ const productionFiles = [...srcFiles, ...extensionFiles];
 const testFiles = walk(path.join(root, "test"), (file) => /\.(ts|mjs)$/.test(file));
 
 // 1) NFR-1：零第三方运行时依赖
-await check("NFR-1 dependencies 为空", () => {
+await check("NFR-1 dependencies 字段存在且为空", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  // 注意：`npm install --save-dev` 会默默删掉空的 `dependencies` 对象，因此必须同时
+  // 断言字段存在（PRD 11 章的 package.json 要点要求显式写 `"dependencies": {}`）。
+  if (!("dependencies" in pkg)) return "package.json 缺少 dependencies 字段";
   const deps = pkg.dependencies ?? {};
   return Object.keys(deps).length === 0 ? true : `dependencies = ${JSON.stringify(deps)}`;
+});
+
+await check("package.json 的 license 与 LICENSE 文件一致", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const licensePath = path.join(root, "LICENSE");
+  if (!fs.existsSync(licensePath)) return "缺少 LICENSE 文件";
+  const body = fs.readFileSync(licensePath, "utf8");
+  if (pkg.license === "MIT" && !/^MIT License/m.test(body)) return "LICENSE 不是 MIT 文本";
+  if (pkg.license === undefined) return "package.json 未声明 license";
+  return true;
 });
 
 // 2) AC-15.1：依赖方向 + TUI 禁用项

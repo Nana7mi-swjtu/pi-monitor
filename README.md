@@ -176,7 +176,7 @@ pi --no-extensions -e D:/PI/pi-monitor/extensions/pi-monitor/index.ts
 ```
 pi-monitor/
 ├─ package.json                    # pi manifest；dependencies 为空
-├─ README.md
+├─ README.md / LICENSE
 ├─ extensions/pi-monitor/index.ts  # 唯一扩展入口：/tokens、token_stats、事件
 ├─ src/
 │  ├─ scanner.ts                   # 编排：发现 → 解析 → 去重 → 落账 → 更新 meta
@@ -223,3 +223,7 @@ npm run fixtures            # 重新生成 test/fixtures/sessions/ 下的会话 
 ```
 
 `type` 取 `feat` / `fix` / `docs` / `test` / `chore` / `refactor`；正文里带上对应的 FR/AC 编号，便于追溯。
+
+## License
+
+[MIT](./LICENSE) © 2026 KaaNoo
