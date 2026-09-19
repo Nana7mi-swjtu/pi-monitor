@@ -24,6 +24,8 @@ export type LocaleSetting = Locale | "auto";
 export type WeekStart = "monday" | "sunday";
 export type ThemeMode = "auto" | "light" | "dark";
 export type LogLevel = "off" | "error" | "info" | "debug";
+/** 汇率来源：手动配置 / 联网自动获取（¥8）。 */
+export type RateSource = "manual" | "auto";
 
 /** 7.3 账本记录。金额字段单位恒为美元（$6），人民币只在展示层换算（¥2）。 */
 export interface UsageRecord {
@@ -251,7 +253,7 @@ export interface HeatmapGrid {
 export interface AggregateResult {
   schemaVersion: 1;
   generatedAt: string;
-  currency: { code: "CNY"; symbol: "¥"; rate: number; rateSource: "manual" };
+  currency: { code: "CNY"; symbol: "¥"; rate: number; rateSource: RateSource };
   window: {
     from: string;
     to: string;
@@ -341,7 +343,16 @@ export interface PiMonitorConfig {
   defaultWindow: string | number;
   tableLimit: number;
   tool: { enabled: boolean };
-  currency: { code: "CNY"; rate: number };
+  currency: {
+    code: "CNY";
+    rate: number;
+    /** ¥8：是否允许联网获取汇率（默认 true，可关闭；关闭后零出站请求）。 */
+    autoRate: boolean;
+    /** 当前 `rate` 的来源；由插件维护，只读。 */
+    rateSource: RateSource;
+    /** 上次自动汇率获取时间（ISO）；从未获取过为 null。由插件维护，只读。 */
+    rateFetchedAt: string | null;
+  };
   dashboard: {
     enabled: boolean;
     port: number;
@@ -350,6 +361,8 @@ export interface PiMonitorConfig {
     stopOnExit: boolean;
     linkMessage: boolean;
     theme: ThemeMode;
+    /** FR-8：仪表盘页面存活时是否自动重扫 + 重载（默认 true）。 */
+    autoRefresh: boolean;
   };
   budget: {
     enabled: boolean;

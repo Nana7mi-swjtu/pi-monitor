@@ -4,8 +4,8 @@
 
 - **唯一入口**：在 pi / pi-web 里输入 `/tokens`，浏览器随即打开仪表盘。本插件不提供 CLI、不在终端里打印报表。
 - **零第三方运行时依赖**：只用 Node 内置模块；`.ts` 源码由 pi 的 jiti 直接加载，无构建步骤。
-- **数据全在本机**：`~/.pi/agent/pi-monitor/`，无遥测、无外网请求。
-- **货币**：账本里金额恒为美元（pi 的事实口径），展示层按配置汇率换算为人民币 `¥`。
+- **数据全在本机**：`~/.pi/agent/pi-monitor/`，无遥测。唯一可选的出站请求是汇率查询（可在配置里关闭）。
+- **货币**：账本里金额恒为美元（pi 的事实口径），展示层按汇率换算为人民币 `¥`；汇率可手动设置，也可自动联网获取（默认开启，12 小时最多取一次）。
 
 ---
 
@@ -55,15 +55,16 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 
 | 区块 | 内容 |
 | --- | --- |
-| 页头 | 窗口选择（今天/昨天/近 7 天/近 30 天/本周/本月/全部/自定义）、语言、主题、刷新、`revision`、汇率行 |
+| 页头 | 窗口选择（今天/昨天/近 7 天/近 30 天/本周/本月/全部/自定义）、语言、主题、刷新（重新扫描 + 重载）、`revision`、汇率行（含来源） |
 | 概览卡 | 计费 Token / 输入 / 输出 / 缓存读 / 缓存写 / 真实成本 / 估算成本 / 消息数 / 活跃天数 / 会话数 / 本会话（实时），每张带环比 |
 | 热力图 | 固定按计费 Token 统计；53 周 × 7 天（随 `weekStart` 对齐），上方月份标签行、左侧星期标签列（每隔一行）；年份选项卡（最近一年 / 各自然年）；格子可聚焦并带 `aria-label` |
 | 每日趋势 | CSS 柱状图 + 可展开每日表格；列宽随天数与容器宽自适应，超出时横向滚动 |
 | 分解表 | 模型 / Provider / 项目 / 会话 / 来源 / 类型，含占比 |
 | 预算进度条 | 日/月各一条，超额变红并显示超支金额 |
 | 操作区 | 重新扫描、重建索引（需输入 `REBUILD`）、导出 Markdown / JSON / CSV |
-| 设置抽屉 | 汇率、语言、主题、预算、局域网开关（部分键只读） |
-| 健康面板 | 文件数、记录数、损坏行、无效会话、去重跳过、一致性不符、损坏成本、未知配置键、时区一致性、上次扫描耗时、索引大小、数据目录（脱敏） |
+| 设置抽屉 | 汇率（手动值 + 自动获取开关 + 「立即更新」）、语言、主题、预算、页面自动刷新开关、局域网开关（部分键只读） |
+| 自动刷新 | 页面打开期间每 30 秒增量扫描 + 重载；切回标签页时立即补一次；可由 `dashboard.autoRefresh` 关闭 |
+| 健康面板 | 文件数、记录数、损坏行、无效会话、去重跳过、一致性不符、损坏成本、未知配置键、时区一致性、汇率来源与更新时间、上次扫描耗时、索引大小、数据目录（脱敏） |
 
 导出的 Markdown / JSON / CSV 都在浏览器侧生成（`Blob` + `URL.createObjectURL`），不会写入服务器磁盘。
 
@@ -92,7 +93,10 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 | `tableLimit` | `20` | 分解表行数（1..200） |
 | `tool.enabled` | `true` | 是否注册 `token_stats`（false 时不注册） |
 | `currency.code` | `"CNY"` | 恒定 |
-| `currency.rate` | `7.20` | USD → CNY（0.01..100.00，2 位小数） |
+| `currency.rate` | `7.20` | USD → CNY（0.01..100.00，2 位小数）；手动设置的值 |
+| `currency.autoRate` | `true` | 是否允许联网自动获取汇率；`false` = 零出站请求（手动「立即更新」仍可用） |
+| `currency.rateSource` | `"manual"` | `manual` / `auto`；由插件维护（只读），页头汇率行据此标注来源 |
+| `currency.rateFetchedAt` | `null` | 上次自动获取时间（ISO）；超过 12 小时视作过期，下次打开页面时重取 |
 | `dashboard.enabled` | `true` | 是否允许 `/tokens` 启动服务 |
 | `dashboard.port` | `30142` | 首选端口 |
 | `dashboard.portRange` | `18` | 顺延尝试次数 |
@@ -100,6 +104,7 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 | `dashboard.stopOnExit` | `true` | `session_shutdown` 时关闭服务 |
 | `dashboard.linkMessage` | `true` | `/tokens` 时是否发一条 ≤ 300 字符的链接卡片 |
 | `dashboard.theme` | `"auto"` | `auto` / `light` / `dark` |
+| `dashboard.autoRefresh` | `true` | 仪表盘页面存活时是否每 30 秒自动重扫 + 重载 |
 | `budget.enabled` | `false` | 预算提醒总开关 |
 | `budget.dailyCNY` / `budget.monthlyCNY` | `null` | 日/月预算（元） |
 | `budget.warnAt` | `[0.5, 0.8, 1.0]` | 触发阈值（0 < w ≤ 1，升序） |
@@ -108,7 +113,7 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 | `logging.level` | `"error"` | `off` / `error` / `info` / `debug` |
 | `logging.maxFiles` / `logging.maxBytes` | `7` / `5242880` | 日志轮转保留份数与单文件上限 |
 
-仪表盘**可写**的键：`currency.rate`、`dashboard.theme`、`dashboard.allowLan`、`locale`、`budget.*`。
+仪表盘**可写**的键：`currency.rate`、`currency.autoRate`、`dashboard.theme`、`dashboard.allowLan`、`dashboard.autoRefresh`、`locale`、`budget.*`。
 其余键只读（`PUT /api/config` 写入非白名单键返回 403）。未知键会被保留，不会被删除。
 
 ### 环境变量
@@ -131,10 +136,14 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 - **成本**：优先用 pi 记录的 `usage.cost.total`（真实成本）；缺失或为 0 时按
   `~/.pi/agent/models.json` 的定价估算（估算成本）。两者**分开显示，绝不合并**；都不知道时显示 `—`。
 - **货币**：账本与 HTTP API 里的金额字段一律是美元；`¥` 金额 = 美元合计 × 汇率（先合计再换算，不逐条换算）。
+- **汇率**：`currency.autoRate` 开启时（默认），插件在 `/tokens`、打开仪表盘或点击「立即更新」时按需联网取值，
+  结果写回 `currency.rate` 并标注 `currency.rateSource: "auto"`；12 小时内不重复请求。
+  取值失败只降级（保留上一次的汇率并在页面上提示），绝不阻塞仪表盘。关闭后零出站请求（NFR-7）。
 - **时间**：以消息级 `message.timestamp` 定位日界；缺失时回退行级时间并在健康面板标记。
 - **日界**：默认时区为系统本地时区，可配置为 `utc` 或任意 IANA 名称；“今天/本周/本月”均按该时区计算。
 - **图表口径**：热力图与每日趋势固定使用**计费 Token**（不提供指标切换）；成本与消息数看概览卡、分解表与导出。
-- **热力图网格**：“最近一年” = 统计末日所在周为末列、向前 53 周；“年份” = 该自然年 1/1～12/31 对齐到整周。网格区间由服务端计算下发，前端不自行推导周对齐。
+- **热力图网格**：“最近一年” = 统计末日所在周为末列、向前 53 周（统计范围就是这 53 周本身，范围内的空白日按 0 上色）；
+  “年份” = 该自然年 1/1～12/31 对齐到整周（首尾多余日为无背景补齐格）。网格区间由服务端计算下发，前端不自行推导周对齐。
 
 ## 数据目录
 
@@ -155,7 +164,15 @@ pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 按 AC-6.2，服务复用时只打开一次浏览器。第二次执行会在提示里给出完整 URL（含 token），可直接粘贴打开。
 
 **Q：金额对不上账单？**
-本插件只做展示层换算，不承诺与供应商账单一致。汇率是本地手动值，可在仪表盘设置或 `config.json` 中修改。
+本插件只做展示层换算，不承诺与供应商账单一致。汇率可手动设置，也可自动联网获取（`currency.autoRate`，默认开启，12 小时最多取一次）。
+
+**Q：自动汇率会联网请求什么？**
+只在需要时向公开汇率接口发一个 `GET`（按序尝试 `open.er-api.com` → `api.frankfurter.dev` → `api.exchangerate-api.com`），
+不携带任何本地信息；三个接口都失败就保留上次的值并提示。设 `currency.autoRate: false` 后完全不出站（可零出站运行）。
+
+**Q：为什么点「刷新」之前数据没变？**
+刷新会先做一次增量扫描再重载。页面打开期间默认每 30 秒也会自动扫描 + 重载，切回标签页时会立即补一次；
+若同时开着 pi CLI 与 pi-web，两边的索引会互相同步（账本变化会被另一进程重新载入）。
 
 **Q：页面提示「索引版本高于当前版本」？**
 说明 `meta.json` 的 `schemaVersion` 比当前插件更新（例如你降级了插件）。此时插件只读运行，不会写入任何索引文件；
@@ -185,7 +202,7 @@ pi-monitor/
 │  ├─ scanner.ts                   # 编排：发现 → 解析 → 去重 → 落账 → 更新 meta
 │  ├─ parser.ts / dedupe.ts / ledger.ts / discover.ts
 │  ├─ aggregate.ts / money.ts / time.ts / cost.ts / format.ts / budget.ts
-│  ├─ config.ts / paths.ts / pricing.ts / args.ts / i18n.ts / health.ts / opener.ts
+│  ├─ config.ts / paths.ts / pricing.ts / args.ts / i18n.ts / health.ts / opener.ts / rates.ts
 │  ├─ types.ts                     # 全部类型定义（账本 / 聚合 schema）
 │  └─ dashboard/                   # HTTP 服务、API 适配、内联单页应用
 ├─ test/
@@ -214,6 +231,7 @@ npm run fixtures            # 重新生成 test/fixtures/sessions/ 下的会话 
 ### 约定
 
 - `src/**` 禁止 import 任何 `@earendil-works/*` 宿主包（保证核心逻辑可用纯 Node 测试）。
+- 出站网络只允许来自 `src/rates.ts` 的汇率查询（主机白名单由 `npm run gate` 强制），且必须受 `currency.autoRate` 把关。
 - `aggregate.ts` / `money.ts` / `time.ts` / `cost.ts` / `format.ts` / `args.ts` / `dedupe.ts` / `i18n.ts` / `budget.ts` 必须是纯函数（无 IO）。
 - 账本记录的字段集合是封闭的：新增字段属于破坏性变更，需要同时改读写两侧与 fixture 断言。
 - 不要为了让测试通过而放宽断言或抽掉真实逻辑；`npm run gate` 会拦住这类改动。

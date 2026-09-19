@@ -32,12 +32,21 @@ interface MonthCol {
   left: number;
 }
 
+interface HeatCell {
+  day: string;
+  pad: boolean;
+  value: number;
+  sessions: number;
+  level: number;
+}
+
 interface ChartFns {
   trendLayout: (dayCount: number, availableWidth: number) => TrendLayout;
   trendLabels: (days: string[], layout: TrendLayout) => string[];
   addDays: (day: string, delta: number) => string;
   dayOffset: (a: string, b: string) => number;
   heatmapMonthCols: (grid: HeatmapGrid) => MonthCol[];
+  heatmapCells: (grid: HeatmapGrid, daily: unknown[], edges: number[]) => HeatCell[];
   TREND_PLOT_HEIGHT: number;
   TREND_LABEL_MIN_PX: number;
   HEAT_CELL: number;
@@ -54,6 +63,7 @@ function loadChartFns(): ChartFns {
        addDays: addDays,
        dayOffset: dayOffset,
        heatmapMonthCols: heatmapMonthCols,
+       heatmapCells: heatmapCells,
        TREND_PLOT_HEIGHT: TREND_PLOT_HEIGHT,
        TREND_LABEL_MIN_PX: TREND_LABEL_MIN_PX,
        HEAT_CELL: HEAT_CELL,
@@ -312,8 +322,89 @@ test("AC-8.9：.trend .bar 不得使用 flex 简写（ADR-0003 的根因）", ()
 
 test("10.1.4：热力图补齐格不算 0 值日，且不可聚焦", () => {
   const appJs = /const APP_JS = String\.raw`([\s\S]*?)`;/.exec(assetsSource)?.[1] as string;
-  assert.match(appJs, /key < grid\.fromDay \|\| key > grid\.toDay/);
+  assert.match(appJs, /heatmapCells\(grid, heat\.daily, edges\)/, "单元格由 heatmapCells 计算（前端不自算周对齐）");
   assert.ok(appJs.includes('class=\\"cell pad\\"'), "补齐格必须渲染为无背景占位格");
+});
+
+/*
+ * 回归（用户报告）：最近一年只显示 1 个格子。
+ * 根因是服务端把 recent 模式的 fromDay/toDay 也设成了「统计末日」，导致 370/371 个格子
+ * 被当成补齐格。这里用真实前端函数断言：recent 网格的统计范围必须覆盖整个网格。
+ */
+test("AC-8.8：最近一年网格的统计范围就是网格本身（否则只剩 1 个非补齐格）", () => {
+  const span = heatmapRange("2026-09-19", "monday", 53);
+  const recent: HeatmapGrid = {
+    ...span,
+    weeks: 53,
+    weekStart: "monday",
+    mode: "recent",
+    year: null,
+    fromDay: span.startDay,
+    toDay: span.endDay,
+  };
+  const daily = [
+    { day: "2026-09-13", totals: { tokens: { billed: 100 }, sessions: 1 } },
+    { day: "2026-09-19", totals: { tokens: { billed: 300 }, sessions: 2 } },
+  ];
+  const cells = chart.heatmapCells(recent, daily, [50, 200, 400]);
+  assert.equal(cells.length, 53 * 7);
+  assert.equal(cells.filter((cell) => cell.pad).length, 0, "recent 模式不得有补齐格");
+  const colored = cells.filter((cell) => !cell.pad && cell.value > 0);
+  assert.equal(colored.length, 2, "有数据的两天必须着色");
+  assert.equal(cells.find((cell) => cell.day === "2026-09-19")?.level, 3, "按分桶上色");
+  assert.equal(cells.find((cell) => cell.day === "2026-09-20")?.level, 0, "网格内其余日期按 0 值日上色");
+
+  // year 模式：网格首尾多余日仍为补齐格（AC-8.8 的「其余为无背景补齐格」）。
+  const yearSpan = heatmapGridRange("2026-01-01", "2026-12-31", "monday");
+  const year: HeatmapGrid = {
+    ...yearSpan,
+    weekStart: "monday",
+    mode: "year",
+    year: 2026,
+    fromDay: "2026-01-01",
+    toDay: "2026-12-31",
+  };
+  const yearCells = chart.heatmapCells(year, daily, [50, 200, 400]);
+  assert.equal(yearCells.filter((cell) => cell.pad).length, yearSpan.weeks * 7 - 365);
+  assert.equal(yearCells.filter((cell) => cell.value > 0).length, 2);
+});
+
+test("FR-8 / AC-8.4：刷新按钮必须重新扫描（不能只重读内存），且页面会自动刷新", () => {
+  const appJs = /const APP_JS = String\.raw`([\s\S]*?)`;/.exec(assetsSource)?.[1] as string;
+  // 「刷新」不再直接 loadAll（那只会重读服务端内存里的旧数据）。
+  assert.ok(
+    /getElementById\("btn-refresh"\)\.addEventListener\("click", function \(\) \{ rescan\(/.test(appJs),
+    "刷新按钮必须走 rescan（重新扫描 + 重载）",
+  );
+  assert.equal(
+    /getElementById\("btn-refresh"\)\.addEventListener\("click", loadAll\)/.test(appJs),
+    false,
+    "刷新按钮不得只重读内存数据",
+  );
+  // 页面存活时按周期自动重扫；切回标签页时立即补一次；隐藏时跳过。
+  assert.match(appJs, /AUTO_REFRESH_MS = 30000/);
+  assert.match(appJs, /setInterval\(function \(\) \{[\s\S]{0,200}if \(document\.hidden\) return;[\s\S]{0,80}autoRefresh\(\)/);
+  assert.match(appJs, /visibilitychange/);
+  assert.match(appJs, /api\("\/api\/rescan", \{ method: "POST" \}\)/);
+  // 首屏必须确认汇率（自动汇率过期时联网一次），但不得递归重载。
+  assert.match(appJs, /state\.ratePending/);
+  assert.match(appJs, /api\("\/api\/rate\/refresh", \{ method: "POST" \}\)/);
+  // 取汇率失败后必须有静默期，否则网络不通时会每 30 s 重试一次。
+  assert.match(appJs, /RATE_RETRY_BACKOFF_MS/);
+  assert.match(appJs, /rateBackoffActive\(\)/);
+});
+
+test("¥8 / FR-13：汇率行标注来源，设置抽屉提供自动汇率与自动刷新开关", () => {
+  const appJs = /const APP_JS = String\.raw`([\s\S]*?)`;/.exec(assetsSource)?.[1] as string;
+  assert.match(appJs, /t\("rate\.line", \{ rate: state\.rate\.toFixed\(2\), source: rateSourceLabel\(\) \}\)/);
+  for (const id of ["set-autorate", "set-autorefresh", "btn-rate-refresh", "set-rate-note"]) {
+    assert.ok(page.includes(`id="${id}"`), `设置抽屉缺少 ${id}`);
+  }
+  for (const key of ["settings.autoRate", "settings.autoRefresh", "settings.rateRefresh", "settings.rateNote", "rate.source.auto", "rate.source.manual"]) {
+    for (const locale of ["zh-CN", "en-US"] as const) {
+      assert.equal(typeof dictionaries[locale][key], "string", `${locale} 缺少 ${key}`);
+    }
+  }
 });
 
 /* -------------------------------------------------- 脚本拼接与语法（NFR-11） */

@@ -16,6 +16,7 @@ import {
   loadConfigFromRaw,
   normalizeRate,
   updateConfigFile,
+  writeCurrencyState,
 } from "../../src/config.ts";
 import { cleanup, makeTempAgentDir } from "../helpers.ts";
 
@@ -105,8 +106,10 @@ test("FR-11.6：白名单与 PRD 12 章一致", () => {
       "budget.injectMessage",
       "budget.monthlyCNY",
       "budget.warnAt",
+      "currency.autoRate",
       "currency.rate",
       "dashboard.allowLan",
+      "dashboard.autoRefresh",
       "dashboard.theme",
       "locale",
     ],
@@ -140,8 +143,7 @@ test("第 12 章：budget.dailyCNY / monthlyCNY 允许 null 或非负数值（FR
   assert.equal(negative.warnings.length, 1);
 });
 
-test("第 12 章：默认配置与文档一致", () => {
-  const config = defaultConfig();
+test("第 12 章：默认配置与文档一致", () => {  const config = defaultConfig();
   assert.equal(config.locale, "auto");
   assert.equal(config.timezone, "local");
   assert.equal(config.weekStart, "monday");
@@ -165,6 +167,69 @@ test("第 12 章：默认配置与文档一致", () => {
   assert.equal(config.logging.level, "error");
   assert.equal(config.logging.maxFiles, 7);
   assert.equal(config.logging.maxBytes, 5_242_880);
+});
+
+test("¥8 / 第 12 章：currency.autoRate / rateSource / rateFetchedAt 的校验与默认值", () => {
+  const defaults = defaultConfig();
+  assert.equal(defaults.currency.autoRate, true, "¥8：默认开启自动汇率（可关闭）");
+  assert.equal(defaults.currency.rateSource, "manual");
+  assert.equal(defaults.currency.rateFetchedAt, null);
+
+  const configured = loadConfigFromRaw({
+    currency: { autoRate: false, rateSource: "auto", rateFetchedAt: "2026-09-19T12:00:00.000Z", rate: 6.71 },
+  });
+  assert.equal(configured.warnings.length, 0);
+  assert.equal(configured.config.currency.autoRate, false);
+  assert.equal(configured.config.currency.rateSource, "auto");
+  assert.equal(configured.config.currency.rateFetchedAt, "2026-09-19T12:00:00.000Z");
+
+  const legacy = loadConfigFromRaw({ currency: { rate: 7 } });
+  assert.equal(legacy.config.currency.autoRate, true, "旧配置缺失该键 → 用默认值");
+  assert.equal(legacy.config.currency.rateSource, "manual");
+
+  for (const bad of ["", "bogus", 1, true]) {
+    const loaded = loadConfigFromRaw({ currency: { rateSource: bad } });
+    assert.equal(loaded.config.currency.rateSource, "manual", `rateSource=${JSON.stringify(bad)} 必须回退`);
+    assert.ok(loaded.warnings.length > 0);
+  }
+  for (const bad of ["", 42, {}]) {
+    const loaded = loadConfigFromRaw({ currency: { rateFetchedAt: bad } });
+    assert.equal(loaded.config.currency.rateFetchedAt, null, `rateFetchedAt=${JSON.stringify(bad)} 必须回退`);
+  }
+  const badBoolean = loadConfigFromRaw({ currency: { autoRate: "yes" } });
+  assert.equal(badBoolean.config.currency.autoRate, true);
+  assert.ok(badBoolean.warnings.length > 0);
+});
+
+test("¥8 / FR-11.5：writeCurrencyState 原子写回汇率与来源，且不碰其他键（AC-11.4）", () => {
+  const dir = makeTempAgentDir();
+  try {
+    const configPath = path.join(dir, "pi-monitor", "config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ currency: { rate: 7.2 }, "my.custom": 1, dashboard: { theme: "dark" } }),
+      "utf8",
+    );
+    const loaded = loadConfig(configPath);
+    const next = writeCurrencyState(configPath, loaded, {
+      rate: 6.7012,
+      rateSource: "auto",
+      rateFetchedAt: "2026-09-19T12:00:00.000Z",
+    });
+    assert.equal(next.config.currency.rate, 6.7, "¥3：写入前统一保留 2 位小数");
+    assert.equal(next.config.currency.rateSource, "auto");
+    assert.equal(next.config.currency.rateFetchedAt, "2026-09-19T12:00:00.000Z");
+
+    const written = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>;
+    assert.equal(written["currency"]["rate"], 6.7);
+    assert.equal(written["currency"]["rateSource"], "auto");
+    assert.equal(written["my.custom"], 1, "未知键必须保留（AC-11.4）");
+    assert.equal(written["dashboard"]["theme"], "dark");
+    assert.deepEqual(fs.readdirSync(path.dirname(configPath)), ["config.json"], "不得留下 .tmp 残留");
+  } finally {
+    cleanup(dir);
+  }
 });
 
 test("FR-11.5：写入使用临时文件 + rename（不留下 .tmp 残留）", () => {

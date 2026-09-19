@@ -9,8 +9,8 @@ import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 
-import { loadConfigFromRaw } from "../../src/config.ts";
-import { buildConfigResponse, type MonitorContext } from "../../src/dashboard/api.ts";
+import { WRITABLE_CONFIG_PATHS, loadConfigFromRaw } from "../../src/config.ts";
+import { buildConfigResponse, refreshAutoRate, type MonitorContext } from "../../src/dashboard/api.ts";
 import { DashboardServer } from "../../src/dashboard/server.ts";
 import { createNullLogger } from "../../src/health.ts";
 import { MonitorEngine } from "../../src/scanner.ts";
@@ -168,6 +168,17 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
     assert.equal(grid["startDay"], "2025-09-15", "首列必须是 53 周前的周一");
     const gridDays = (Date.parse(grid["endDay"] + "T00:00:00Z") - Date.parse(grid["startDay"] + "T00:00:00Z")) / 86400000 + 1;
     assert.equal(gridDays, grid["weeks"] * 7, "网格天数必须等于 周数 × 7");
+    // 回归（用户报告：“最近一年”只显示 1 个格子）：recent 模式的统计范围必须就是整个网格，
+    // 否则除锚点日以外的 370 个格子会被当成补齐格而不着色。
+    assert.equal(grid["fromDay"], grid["startDay"], "recent：统计范围首日 = 网格首日");
+    assert.equal(grid["toDay"], grid["endDay"], "recent：统计范围末日 = 网格末日");
+    assert.ok(daily["daily"].length > 0);
+    for (const row of daily["daily"] as Array<Record<string, unknown>>) {
+      assert.ok(
+        (row["day"] as string) >= grid["startDay"] && (row["day"] as string) <= grid["endDay"],
+        `有数据的日 ${row["day"]} 必须落在网格内`,
+      );
+    }
     for (const boundary of [grid["startDay"], grid["endDay"]]) {
       const weekday = new Date(boundary + "T00:00:00Z").getUTCDay();
       assert.ok(weekday === 1 || weekday === 0, "边界必须落在周一/周日");
@@ -399,6 +410,168 @@ test("FR-6.3 / AC-6.3：URL 必须携带 token（`/?t=<token>`）", async () => 
     assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/\?t=[0-9a-f]{32}$/);
     const res = await fetch(url);
     assert.equal(res.status, 200);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("¥8：汇率来源在 /api/config 与 /api/summary 中可见，且只能写 currency.autoRate", async () => {
+  const harness = await startHarness();
+  try {
+    const initial = (await (await fetch(`${harness.base}/api/config`, authed(harness))).json()) as Record<string, any>;
+    assert.equal(initial["currency"]["autoRate"], true, "¥8：自动汇率默认开启");
+    assert.equal(initial["currency"]["rateSource"], "manual");
+    assert.equal(initial["currency"]["rateFetchedAt"], null);
+    assert.ok(initial["writableKeys"].includes("currency.autoRate"));
+    assert.ok(initial["writableKeys"].includes("dashboard.autoRefresh"));
+    assert.equal(initial["writableKeys"].includes("currency.rateSource"), false, "来源与时间是插件维护的只读键");
+    // 白名单必须与配置层完全一致（不得两处漂移）。
+    assert.deepEqual([...initial["writableKeys"]].sort(), [...WRITABLE_CONFIG_PATHS].sort());
+
+    const allowed = await fetch(
+      `${harness.base}/api/config`,
+      authed(harness, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currency: { autoRate: false } }),
+      }),
+    );
+    assert.equal(allowed.status, 200);
+    assert.equal(buildConfigResponse(harness.context).currency.autoRate, false);
+
+    const denied = await fetch(
+      `${harness.base}/api/config`,
+      authed(harness, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currency: { rateSource: "auto" } }),
+      }),
+    );
+    assert.equal(denied.status, 403);
+
+    // ¥4 / ¥8：手动写入 rate 后，来源必须回到「手动设置」（否则页头会谎报为自动获取）。
+    harness.context.rateFetcher = (async () =>
+      new Response(JSON.stringify({ rates: { CNY: 6.7 } }), { status: 200 })) as typeof fetch;
+    assert.equal((await refreshAutoRate(harness.context, { force: true })).rateSource, "auto");
+    assert.equal(buildConfigResponse(harness.context).currency.rate, 6.7);
+
+    const manual = await fetch(
+      `${harness.base}/api/config`,
+      authed(harness, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currency: { rate: 7 } }),
+      }),
+    );
+    assert.equal(manual.status, 200);
+    const afterManual = buildConfigResponse(harness.context);
+    assert.equal(afterManual.currency.rate, 7);
+    assert.equal(afterManual.currency.rateSource, "manual");
+    assert.equal(afterManual.currency.rateFetchedAt, null);
+    const written = JSON.parse(fs.readFileSync(harness.context.configPath, "utf8")) as Record<string, any>;
+    assert.equal(written["currency"]["rate"], 7);
+    assert.equal(written["currency"]["rateSource"], "manual");
+    assert.equal(written["currency"]["autoRate"], false, "同一次 PUT 里的其他键也要保留");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("¥8：POST /api/rate/refresh 取回汇率并立即应用于所有金额（¥5：revision 不变）", async () => {
+  const harness = await startHarness();
+  try {
+    const before = (await (await fetch(`${harness.base}/api/summary?window=all`, authed(harness))).json()) as Record<string, any>;
+    const revisionBefore = harness.engine.meta.revision;
+    const calls: string[] = [];
+    harness.context.rateFetcher = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ rates: { CNY: 6.7012 }, date: "2026-09-19" }), { status: 200 });
+    }) as typeof fetch;
+
+    const res = await fetch(`${harness.base}/api/rate/refresh`, authed(harness, { method: "POST" }));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, any>;
+    assert.equal(body["ok"], true);
+    assert.equal(body["applied"], true);
+    assert.equal(body["rate"], 6.7, "¥3：保留 2 位小数");
+    assert.equal(body["rateSource"], "auto");
+    assert.equal(body["provider"], "open.er-api.com");
+    assert.equal(calls.length, 1, "只允许请求 1 个提供方");
+
+    const after = (await (await fetch(`${harness.base}/api/summary?window=all`, authed(harness))).json()) as Record<string, any>;
+    assert.equal(after["currency"]["rate"], 6.7);
+    assert.equal(after["currency"]["rateSource"], "auto");
+    assert.equal(after["totals"]["cost"]["usd"]["known"], before["totals"]["cost"]["usd"]["known"], "美元值不变");
+    assert.equal(after["totals"]["cost"]["cny"]["known"], 0.000456, "0.000068 × 6.7 = 0.0004556");
+    assert.equal(harness.engine.meta.revision, revisionBefore, "¥5：取汇率不得改 revision");
+
+    const config = buildConfigResponse(harness.context);
+    assert.equal(config.currency.rateSource, "auto");
+    assert.equal(typeof config.currency.rateFetchedAt, "string");
+    // 落盘（¥8：重启后仍然生效）。
+    const written = JSON.parse(fs.readFileSync(harness.context.configPath, "utf8")) as Record<string, any>;
+    assert.equal(written["currency"]["rate"], 6.7);
+    assert.equal(written["currency"]["rateSource"], "auto");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("¥8 / NFR-5：取汇率失败时保留旧值、返回 ok:false，不允许 5xx 或抛异常", async () => {
+  const harness = await startHarness();
+  try {
+    harness.context.rateFetcher = (async () => {
+      throw new Error("getaddrinfo ENOTFOUND open.er-api.com");
+    }) as typeof fetch;
+
+    const res = await fetch(`${harness.base}/api/rate/refresh`, authed(harness, { method: "POST" }));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Record<string, any>;
+    assert.equal(body["ok"], false);
+    assert.equal(body["applied"], false);
+    assert.equal(body["rate"], 7.2, "失败时必须保留上次的汇率");
+    assert.equal(body["rateSource"], "manual");
+    assert.match(body["reason"], /ENOTFOUND/);
+    assert.equal(body["attempts"].length, 3);
+    assert.equal(fs.existsSync(harness.context.configPath), false, "失败不得写配置文件");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("¥8：关闭 autoRate 后 /tokens 不会联网（force 仍可手动更新）；错误方法返回 405", async () => {
+  const harness = await startHarness();
+  try {
+    const put = await fetch(
+      `${harness.base}/api/config`,
+      authed(harness, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currency: { autoRate: false } }),
+      }),
+    );
+    assert.equal(put.status, 200);
+
+    let calls = 0;
+    harness.context.rateFetcher = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ rates: { CNY: 6.6 } }), { status: 200 });
+    }) as typeof fetch;
+
+    // 非强制刷新：开关已关 → 直接返回，不发请求。
+    const silent = await refreshAutoRate(harness.context, {});
+    assert.equal(silent.applied, false);
+    assert.equal(silent.ok, true);
+    assert.equal(calls, 0, "关掉自动汇率后不得发起任何出站请求（NFR-7）");
+
+    // 手动「立即更新」是显式动作，仍然允许。
+    const forced = await refreshAutoRate(harness.context, { force: true });
+    assert.equal(forced.applied, true);
+    assert.equal(forced.rate, 6.6);
+    assert.equal(calls, 1);
+
+    const wrongMethod = await fetch(`${harness.base}/api/rate/refresh`, authed(harness));
+    assert.equal(wrongMethod.status, 405);
   } finally {
     await harness.stop();
   }

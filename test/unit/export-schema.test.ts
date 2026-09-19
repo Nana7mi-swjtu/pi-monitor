@@ -142,6 +142,17 @@ test("AC-9.2：导出 JSON 通过 export-schema.json 校验", async () => {
     assert.ok((roundTripped as { groups: unknown[] }).groups.length > 0);
     assert.ok((roundTripped as { daily: unknown[] }).daily.length > 0);
     assert.equal((roundTripped as { currency: { code: string } }).currency.code, "CNY");
+
+    // ¥8：自动获取汇率时 `rateSource: "auto"` 也必须通过 schema（导出的 JSON 与页面同一聚合器）。
+    const autoResult = JSON.parse(
+      JSON.stringify({ ...result, currency: { ...result.currency, rateSource: "auto" } }),
+    ) as unknown;
+    assert.equal(validate(autoResult, schema, schema), null, "自动汇率下导出 JSON 仍需符合 schema");
+    // 未声明的字段（如自动汇率的时间戳只存在于配置，不属于 7.5）必须被拦住。
+    const extra = JSON.parse(
+      JSON.stringify({ ...result, currency: { ...result.currency, rateFetchedAt: "2026-09-19T00:00:00.000Z" } }),
+    ) as unknown;
+    assert.notEqual(validate(extra, schema, schema), null, "7.5 之外的 currency 字段必须不被接受");
   } finally {
     cleanup(agentDir);
   }

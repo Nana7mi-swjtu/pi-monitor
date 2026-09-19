@@ -19,6 +19,7 @@ import {
   buildHealthResponse,
   buildRecords,
   buildSummary,
+  refreshAutoRate,
   type MonitorContext,
   type QueryOptions,
 } from "./api.ts";
@@ -239,6 +240,15 @@ export class DashboardServer {
         req.resume();
         this.handleRescan(res);
         return;
+      case "/api/rate/refresh":
+        if (method !== "POST") {
+          req.resume();
+          sendJson(res, 405, { error: "method not allowed" });
+          return;
+        }
+        req.resume();
+        this.handleRateRefresh(res);
+        return;
       case "/api/rebuild":
         if (method !== "POST") {
           req.resume();
@@ -275,6 +285,8 @@ export class DashboardServer {
         theme: config.theme,
         locale: config.locale,
         tableLimit: config.tableLimit,
+        autoRate: config.currency.autoRate,
+        autoRefresh: config.dashboard.autoRefresh,
         currency: config.currency,
       },
     });
@@ -348,6 +360,13 @@ export class DashboardServer {
           readOnly: summary.readOnly,
         });
       })
+      .catch((error: Error) => sendJson(res, 500, { error: error.message }));
+  }
+
+  /** ¥8：`POST /api/rate/refresh`（仪表盘设置抽屉与首屏过期时调用）。 */
+  private handleRateRefresh(res: http.ServerResponse): void {
+    refreshAutoRate(this.options.context(), { force: true })
+      .then((outcome) => sendJson(res, 200, outcome))
       .catch((error: Error) => sendJson(res, 500, { error: error.message }));
   }
 

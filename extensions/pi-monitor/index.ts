@@ -29,7 +29,7 @@ import { readUsageComponents } from "../../src/parser.ts";
 import { resolveAgentDir, resolveConfigPath } from "../../src/paths.ts";
 import { MonitorEngine } from "../../src/scanner.ts";
 import { dayKey, resolveWindow } from "../../src/time.ts";
-import { buildToolAggregate, type MonitorContext, type QueryOptions } from "../../src/dashboard/api.ts";
+import { buildToolAggregate, refreshAutoRate, type MonitorContext, type QueryOptions } from "../../src/dashboard/api.ts";
 import { DashboardServer } from "../../src/dashboard/server.ts";
 import type { BudgetState, Locale, RecordKind, Totals, UsageRecord } from "../../src/types.ts";
 
@@ -292,6 +292,11 @@ async function handleTokensCommand(
     .catch(() => {
       /* 扫描失败由 engine 计数并降级，命令本身不失败（13 章）。 */
     });
+
+  // ¥8：汇率过期时后台联网取一次（不阻塞命令返回；关闭 autoRate 时零出站）。
+  void refreshAutoRate(runtime.context, {}).catch(() => {
+    /* 汇率失败只降级（保留上次的值），不影响仪表盘启动（NFR-5）。 */
+  });
 
   // AC-6.2：服务已在运行时复用现有进程 / 端口 / token，且只打开一次浏览器。
   let opened = false;

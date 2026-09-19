@@ -11,7 +11,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import extension from "../../extensions/pi-monitor/index.ts";
-import { cleanup, makeTempAgentDir, writeSessionFile, assistantEntry } from "../helpers.ts";
+import { cleanup, makeTempAgentDir, writeSessionFile, assistantEntry, projectRoot } from "../helpers.ts";
 
 const RUNTIME_KEY = "__piMonitorRuntime_v1__";
 
@@ -21,12 +21,15 @@ interface RuntimeHandle {
     records: Array<{ billed: number }>;
     meta: { revision: number };
     paths: { ledger: string };
+    config: { currency: { rate: number; rateSource: string; autoRate: boolean; rateFetchedAt: string | null } };
     getLiveTotals: (rate: number) => {
       tokens: { billed: number };
       messages: { total: number };
       cost: { usd: { known: number | null } };
     };
   };
+  /** ¥8：由接口注入的汇率请求实现（测试用）。 */
+  context: { rateFetcher?: typeof fetch };
   server: {
     info: { port: number; pid: number; url: string; token: string; startedAt: string } | null;
     stop: () => Promise<void>;
@@ -119,9 +122,10 @@ async function boot(options: { config?: Record<string, unknown>; sessions?: Arra
   const agentDir = makeTempAgentDir();
   const dataDir = path.join(agentDir, "pi-monitor");
   fs.mkdirSync(dataDir, { recursive: true });
-  if (options.config !== undefined) {
-    fs.writeFileSync(path.join(dataDir, "config.json"), JSON.stringify(options.config, null, 2), "utf8");
-  }
+  // 契约测试必须可离线运行：默认关掉自动汇率（¥8），否则每次 /tokens 都会真的联网。
+  // 自动汇率本身的取数/降级由 test/unit/rates.test.ts 与 test/integration/server.test.ts 用注入 fetcher 覆盖。
+  const config = { currency: { autoRate: false }, ...(options.config ?? {}) };
+  fs.writeFileSync(path.join(dataDir, "config.json"), JSON.stringify(config, null, 2), "utf8");
   if (options.sessions !== undefined) {
     const dir = path.join(agentDir, "sessions", "--proj--");
     fs.mkdirSync(dir, { recursive: true });
@@ -148,8 +152,7 @@ async function boot(options: { config?: Record<string, unknown>; sessions?: Arra
   };
 }
 
-test("AC-15.3：只注册 `tokens` 一个命令；tool.enabled:false 时不注册 token_stats", async () => {
-  const enabled = await boot();
+test("AC-15.3：只注册 `tokens` 一个命令；tool.enabled:false 时不注册 token_stats", async () => {  const enabled = await boot();
   try {
     assert.deepEqual([...enabled.mock.commands.keys()], ["tokens"]);
     assert.deepEqual([...enabled.mock.tools.keys()], ["token_stats"]);
@@ -206,6 +209,36 @@ function walkTypeScript(dir: string): string[] {
   }
   return out;
 }
+
+test("¥8：`/tokens` 启动仪表盘时在后台按需获取汇率（且不阻塞命令返回）", async () => {
+  // 源码级断言：联网取汇率必须由 `refreshAutoRate` 统一把关（开关、TTL、降级都在其中）。
+  const source = fs.readFileSync(path.join(projectRoot, "extensions", "pi-monitor", "index.ts"), "utf8");
+  assert.match(source, /refreshAutoRate\(runtime\.context/, "extension 必须在 /tokens 流程里接入自动汇率");
+  assert.match(source, /void refreshAutoRate/, "必须 fire-and-forget（AC-6.8：命令不阻塞）");
+
+  // 行为级断言（注入 fetcher，无真实网络）：开启 autoRate 后一次 /tokens 会取一次汇率。
+  const scenario = await boot({ config: { currency: { autoRate: true } } });
+  try {
+    let calls = 0;
+    scenario.runtime.context.rateFetcher = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ rates: { CNY: 6.7 } }), { status: 200 });
+    }) as typeof fetch;
+    const { ctx } = makeMockContext({ hasUI: true, mode: "rpc" });
+    await scenario.mock.commands.get("tokens")?.handler("--no-open", ctx);
+    assert.ok(scenario.runtime.server?.info, "服务必须已启动");
+    await scenario.runtime.server?.stop();
+    // 自动汇率是 fire-and-forget（AC-6.8），给它几个 tick 落地。
+    for (let index = 0; index < 50 && calls === 0; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(calls, 1, "关闭前只允许取 1 次");
+    assert.equal(scenario.runtime.engine.config.currency.rateSource, "auto");
+    assert.equal(scenario.runtime.engine.config.currency.rate, 6.7);
+  } finally {
+    scenario.dispose();
+  }
+});
 
 test("AC-6.9 / AC-15.2：无 UI 模式下静默返回，不调用任何 ctx.ui.*", async () => {
   const scenario = await boot();

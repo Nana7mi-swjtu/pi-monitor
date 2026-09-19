@@ -117,15 +117,15 @@ test("AC-9.3：Markdown 首部含汇率行，数字与当前窗口一致，区�
     labelFor: () => "2026-09-19 → 2026-09-19",
   });
 
-  const markdown = buildMarkdown({
-    locale: "zh-CN",
+  const markdownInput = {
+    locale: "zh-CN" as const,
     windowLabel: result.window.label,
     timezone: tz,
     rate: result.currency.rate,
     generatedAt: new Date("2026-09-19T12:00:00.000Z"),
     overview: [{ label: result.window.label, totals: result.totals }],
     daily: result.daily ?? [],
-    breakdown: { dimension: "model", groups: result.groups ?? [] },
+    breakdown: { dimension: "model" as const, groups: result.groups ?? [] },
     meta: {
       schemaVersion: 1,
       revision: 3,
@@ -155,11 +155,19 @@ test("AC-9.3：Markdown 首部含汇率行，数字与当前窗口一致，区�
     records: windowed.length,
     dedupeSkipped: 0,
     updatedAt: "2026-09-19 11:00:00 +00:00",
-  });
+  };
+  const markdown = buildMarkdown(markdownInput);
+  const markdownInputForAuto = { ...markdownInput, rateSource: "auto" as const };
 
   const lines = markdown.split("\n");
   assert.equal(lines[0]?.startsWith("# pi-monitor 报表 ·"), true);
   assert.ok(markdown.includes("汇率：1 USD = 7.20 CNY（手动设置）"), "¥4：首部必须含汇率行");
+  // ¥8：自动获取时必须标注来源为「自动获取」（默认 manual）。
+  assert.ok(
+    buildMarkdown({ ...markdownInputForAuto })
+      .includes("汇率：1 USD = 7.20 CNY（自动获取）"),
+    "¥8：自动汇率必须标注来源",
+  );
   assert.ok(markdown.includes("## 概览"));
   assert.ok(markdown.includes("## 每日明细"));
   assert.ok(markdown.includes("## 按模型"));

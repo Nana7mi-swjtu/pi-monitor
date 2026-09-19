@@ -78,6 +78,26 @@ interface FileMetaCache {
   project: string;
 }
 
+/** 账本磁盘指纹（`size` + `mtimeMs`），用于发现「另一个 pi 进程写过账本」。 */
+interface LedgerStamp {
+  size: number;
+  mtimeMs: number;
+}
+
+function ledgerStampOf(ledgerPath: string): LedgerStamp | null {
+  try {
+    const stat = fs.statSync(ledgerPath);
+    return { size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function sameStamp(a: LedgerStamp | null, b: LedgerStamp | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.size === b.size && a.mtimeMs === b.mtimeMs;
+}
+
 export interface EngineOptions {
   agentDir: string;
   config: PiMonitorConfig;
@@ -133,6 +153,8 @@ export class MonitorEngine {
   private scanInFlight: Promise<ScanSummary> | null = null;
   /** 内存中的 `records` 是否可信（已 load 或已完整扫描过）。用于 NFR-2 热启动短路。 */
   private recordsLoaded = false;
+  /** 上次读/写账本后的磁盘指纹（FR-2：多进程同时持有引擎时必须能跟上）。 */
+  private ledgerStamp: LedgerStamp | null = null;
   /** FR-6.2：命令已声明「准备扫描」，但真正的 scan() 尚未开始（大账本载入期间保持进度条）。 */
   private scanPending = false;
   private readonly currencyWarnings: string[] = [];
@@ -206,6 +228,7 @@ export class MonitorEngine {
     this.meta.records = this.records.length;
     this.meta.configWarnings = [...new Set([...this.meta.configWarnings, ...this.currencyWarnings])];
     this.indexSizeBytes = ledger.bytes;
+    this.ledgerStamp = ledgerStampOf(this.paths.ledger);
     this.recordsLoaded = true;
     void cursor;
   }
@@ -290,6 +313,7 @@ export class MonitorEngine {
     this.meta.records = this.records.length;
     this.meta.revision += 1;
     this.persistMeta();
+    this.ledgerStamp = ledgerStampOf(this.paths.ledger);
     this.recordsLoaded = true;
     return fresh.length;
   }
@@ -367,6 +391,13 @@ export class MonitorEngine {
 
     const rebuild = options.rebuild === true;
     const fullRescan = options.fullRescan === true || rebuild;
+
+    // FR-2 / NFR-4：pi-web 与 pi CLI 各持有一个引擎，另一个进程可能已经扫描过并追加了账本、
+    // 推进了游标。此时若只看本进程内存里的 `records` + 磁盘游标，会认为「所有文件都没变化」
+    // 并回放陈旧数据（“重新扫描也看不到今天的用量”）。因此先比对账本磁盘指纹，
+    // 被别的进程改过就重新载入账本（游标本来就会重新读盘）。
+    if (!sameStamp(this.ledgerStamp, ledgerStampOf(this.paths.ledger))) this.reloadLedger();
+
     const roots = this.sessionRoots();
     const discovery = await discoverSessionFiles(roots);
 
@@ -564,6 +595,7 @@ export class MonitorEngine {
       this.records = deduped.records;
     }
     this.recordsLoaded = true;
+    this.ledgerStamp = ledgerStampOf(this.paths.ledger);
 
     const nextCursor: CursorFile = {
       schemaVersion: CURSOR_SCHEMA_VERSION,
@@ -647,6 +679,21 @@ export class MonitorEngine {
     } finally {
       release();
     }
+  }
+
+  /**
+   * FR-2 / NFR-4：重新从磁盘载入账本（另一个 pi 进程写过账本时使用）。
+   * 只重读账本，游标本身在每轮扫描开头就会重新读盘，因此不需要额外处理。
+   */
+  private reloadLedger(): void {
+    const ledger = readLedger(this.paths.ledger);
+    this.records = ledger.records;
+    this.meta.records = this.records.length;
+    if (ledger.repaired > 0) this.meta.ledgerRepaired = (this.meta.ledgerRepaired ?? 0) + ledger.repaired;
+    this.indexSizeBytes = ledger.bytes;
+    this.ledgerStamp = ledgerStampOf(this.paths.ledger);
+    this.recordsLoaded = true;
+    this.logger.info("账本被其他进程更新，已重新载入", { records: this.records.length });
   }
 
   private persistMeta(): void {

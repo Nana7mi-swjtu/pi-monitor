@@ -17,6 +17,7 @@ import {
   type LocaleSetting,
   type LogLevel,
   type PiMonitorConfig,
+  type RateSource,
   type ThemeMode,
   type WeekStart,
 } from "./types.ts";
@@ -35,6 +36,8 @@ export interface LoadedConfig {
 
 /** ¥3：汇率默认值 7.20，范围 0.01..100.00。 */
 export const DEFAULT_RATE = 7.2;
+/** ¥8：自动汇率的默认开关（默认开启；关闭后零出站请求）。 */
+export const DEFAULT_AUTO_RATE = true;
 export const DEFAULT_PORT = 30142;
 export const DEFAULT_PORT_RANGE = 18;
 
@@ -51,7 +54,13 @@ export function defaultConfig(): PiMonitorConfig {
     defaultWindow: "last7d",
     tableLimit: 20,
     tool: { enabled: true },
-    currency: { code: "CNY", rate: DEFAULT_RATE },
+    currency: {
+      code: "CNY",
+      rate: DEFAULT_RATE,
+      autoRate: DEFAULT_AUTO_RATE,
+      rateSource: "manual",
+      rateFetchedAt: null,
+    },
     dashboard: {
       enabled: true,
       port: DEFAULT_PORT,
@@ -60,6 +69,7 @@ export function defaultConfig(): PiMonitorConfig {
       stopOnExit: true,
       linkMessage: true,
       theme: "auto",
+      autoRefresh: true,
     },
     budget: {
       enabled: false,
@@ -76,8 +86,10 @@ export function defaultConfig(): PiMonitorConfig {
 /** FR-11.6：仪表盘可写字段白名单（其余键返回 403，AC-11.5）。 */
 export const WRITABLE_CONFIG_PATHS: readonly string[] = [
   "currency.rate",
+  "currency.autoRate",
   "dashboard.theme",
   "dashboard.allowLan",
+  "dashboard.autoRefresh",
   "locale",
   "budget.enabled",
   "budget.dailyCNY",
@@ -87,7 +99,7 @@ export const WRITABLE_CONFIG_PATHS: readonly string[] = [
   "budget.injectMessage",
 ];
 
-type TypeKind = "string" | "number" | "boolean" | "array" | "object" | "nullable-number";
+type TypeKind = "string" | "number" | "boolean" | "array" | "object" | "nullable-number" | "nullable-string";
 
 interface LeafRule {
   kind: TypeKind;
@@ -112,6 +124,13 @@ const SHAPE: Record<string, LeafRule | Record<string, unknown>> = {
   currency: {
     code: { kind: "string", test: (v: unknown) => v === "CNY", describe: "CNY" },
     rate: { kind: "number", test: isRate, describe: "0.01..100.00" },
+    autoRate: { kind: "boolean", describe: "boolean" },
+    rateSource: { kind: "string", test: (v: unknown) => v === "manual" || v === "auto", describe: "manual | auto" },
+    rateFetchedAt: {
+      kind: "nullable-string",
+      test: (v: unknown) => v === null || (typeof v === "string" && v.length > 0),
+      describe: "ISO 时间字符串 | null",
+    },
   },
   dashboard: {
     enabled: { kind: "boolean", describe: "boolean" },
@@ -121,6 +140,7 @@ const SHAPE: Record<string, LeafRule | Record<string, unknown>> = {
     stopOnExit: { kind: "boolean", describe: "boolean" },
     linkMessage: { kind: "boolean", describe: "boolean" },
     theme: { kind: "string", test: (v: unknown) => v === "auto" || v === "light" || v === "dark", describe: "auto | light | dark" },
+    autoRefresh: { kind: "boolean", describe: "boolean" },
   },
   budget: {
     enabled: { kind: "boolean", describe: "boolean" },
@@ -233,6 +253,19 @@ function applyShape(
         target[key] = value;
         continue;
       }
+      if (rule.kind === "nullable-string") {
+        // `currency.rateFetchedAt`：允许 null 或非空字符串。
+        if (value === null) {
+          target[key] = null;
+          continue;
+        }
+        if (typeof value !== "string" || (rule.test !== undefined && !rule.test(value))) {
+          warnings.push(`${path}: 值非法（期望 ${rule.describe}），已回退默认值`);
+          continue;
+        }
+        target[key] = value;
+        continue;
+      }
       const expected = kindOf(value);
       if (expected !== rule.kind) {
         warnings.push(`${path}: 期望 ${rule.describe}，实际 ${expected}，已回退默认值`);
@@ -301,6 +334,8 @@ export interface ConfigUpdateResult {
   config: PiMonitorConfig;
   warnings: string[];
   unknownKeys: string[];
+  /** 合并后的原始 JSON（含未知键）。写回侧（如自动汇率）可在此基础上继续合并。 */
+  raw: Record<string, unknown>;
 }
 
 /**
@@ -324,6 +359,7 @@ export function updateConfigFile(
       config: current.config,
       warnings: current.warnings,
       unknownKeys: current.unknownKeys,
+      raw: current.raw,
     };
   }
 
@@ -340,7 +376,34 @@ export function updateConfigFile(
     config: reloaded.config,
     warnings: reloaded.warnings,
     unknownKeys: reloaded.unknownKeys,
+    raw: merged,
   };
+}
+
+export interface CurrencyStatePatch {
+  rate?: number;
+  rateSource?: RateSource;
+  rateFetchedAt?: string | null;
+}
+
+/**
+ * ¥8：自动汇率的写回通道（插件内部使用，不经过仪表盘白名单）。
+ * 只允许改 `currency.rate` / `currency.rateSource` / `currency.rateFetchedAt`，
+ * 沿用与 `updateConfigFile` 相同的原子写 + 校验（非法值回退默认值并计入 warnings）。
+ * ¥5：仅改展示层汇率，不触碰账本与 `revision`。
+ */
+export function writeCurrencyState(
+  configPath: string,
+  current: LoadedConfig,
+  patch: CurrencyStatePatch,
+): LoadedConfig {
+  const merged = structuredClone(current.raw);
+  if (patch.rate !== undefined) setPath(merged, "currency.rate", normalizeRate(patch.rate));
+  if (patch.rateSource !== undefined) setPath(merged, "currency.rateSource", patch.rateSource);
+  if (patch.rateFetchedAt !== undefined) setPath(merged, "currency.rateFetchedAt", patch.rateFetchedAt);
+  const reloaded = loadConfigFromRaw(merged);
+  writeConfig(configPath, merged);
+  return reloaded;
 }
 
 /** 从内存对象校验配置（不读盘）。 */

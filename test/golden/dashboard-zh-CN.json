@@ -1,7 +1,9 @@
 {
   "_note": "人工校对（PRD P-6 / AC-13.1）：仪表盘关键文案的 zh-CN 期望值（标题、列名、单位、按钮）。",
   "app.title": "pi-monitor",
-  "rate.line": "汇率 1 USD = {rate} CNY（手动设置）",
+  "rate.line": "汇率 1 USD = {rate} CNY（{source}）",
+  "rate.source.manual": "手动设置",
+  "rate.source.auto": "自动获取",
   "card.billed": "计费 Token",
   "card.input": "输入",
   "card.output": "输出",

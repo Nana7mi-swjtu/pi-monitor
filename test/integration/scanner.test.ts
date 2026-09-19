@@ -96,8 +96,7 @@ test("FR-2.3：不吞掉正在写入的半行（游标不越过未终止行）",
   }
 });
 
-test("AC-2.2：重写文件后旧记录不残留", async () => {
-  const agentDir = makeTempAgentDir();
+test("AC-2.2：重写文件后旧记录不残留", async () => {  const agentDir = makeTempAgentDir();
   try {
     const dir = sessionDir(agentDir);
     const file = path.join(dir, "rewrite.jsonl");
@@ -130,6 +129,54 @@ test("AC-2.2：重写文件后旧记录不残留", async () => {
     assert.equal(engine.records.length, 1, "旧记录必须被清除");
     assert.deepEqual(engine.records.map((record) => record.entryId), ["r3"]);
     assert.equal(engine.records[0]?.sessionId, "sess-rewritten");
+  } finally {
+    cleanup(agentDir);
+  }
+});
+
+/*
+ * 回归（用户报告：「重新扫描也看不到今天的用量，直到很久以后才出现」）：
+ * pi-web 与 pi CLI 各持有一个引擎，另一个进程扫描后会自行追加账本并推进游标；
+ * 本进程若只看内存 records + 磁盘游标，会得到「所有文件都没变化」并回放陈旧数据。
+ * 修复后：账本磁盘指纹变化 → 重新载入账本，重新扫描即时可见。
+ */
+test("NFR-4 / FR-2：另一个进程扫过之后，本进程重新扫描必须能跟上（不得回放陈旧内存）", async () => {
+  const agentDir = makeTempAgentDir();
+  try {
+    const dir = sessionDir(agentDir);
+    const file = writeSessionFile(dir, "shared.jsonl", [
+      assistantEntry({ id: "s1", iso: "2026-09-19T10:00:00.000Z", input: 10, output: 10, costTotal: 0.01 }),
+    ]);
+
+    const dashboard = makeEngine(agentDir);
+    await dashboard.scan({});
+    assert.equal(dashboard.records.length, 1);
+
+    // 另一个 pi 进程：追加一条 usage，并自己扫描（写账本 + 写游标）。
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify(assistantEntry({ id: "s2", iso: "2026-09-19T10:05:00.000Z", input: 20, output: 20, costTotal: 0.02 }))}\n`,
+      "utf8",
+    );
+    const other = makeEngine(agentDir);
+    await other.scan({});
+    assert.equal(other.records.length, 2);
+
+    // 仪表盘进程重新扫描：「所有文件未变化」但账本已变 → 必须重新载入。
+    const summary = await dashboard.scan({});
+    assert.equal(summary.scanned, 0, "游标已被另一个进程推进，本进程看不到文件变化");
+    assert.equal(dashboard.records.length, 2, "账本已被外部更新 → 内存必须跟着更新");
+    assert.equal(dashboard.meta.records, 2);
+
+    // 后续扫描不得因为「指纹已对齐」而再次丢记录。
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify(assistantEntry({ id: "s3", iso: "2026-09-19T10:06:00.000Z", input: 30, output: 30, costTotal: 0.03 }))}\n`,
+      "utf8",
+    );
+    const third = await dashboard.scan({});
+    assert.equal(third.scanned, 1);
+    assert.equal(dashboard.records.length, 3);
   } finally {
     cleanup(agentDir);
   }

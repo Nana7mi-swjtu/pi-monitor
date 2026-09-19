@@ -13,6 +13,7 @@ import type {
   GroupRow,
   Locale,
   MetaInfo,
+  RateSource,
   Totals,
   UsageRecord,
 } from "./types.ts";
@@ -239,6 +240,8 @@ export interface MarkdownInput {
   windowLabel: string;
   timezone: string;
   rate: number;
+  /** ¥8：汇率来源；缺省按手动设置（¥4：任何金额都要可追溯到汇率及其来源）。 */
+  rateSource?: RateSource;
   generatedAt: Date;
   overview: MarkdownOverviewColumn[];
   daily: readonly DailyRow[];
@@ -253,8 +256,7 @@ export interface MarkdownInput {
 /**
  * 9.3：导出 Markdown。区块顺序固定：标题 → 汇率/生成时间 → 概览 → 每日明细 → 分解表 → 数据源。
  * 金额为人民币，并附 USD 参考列；首部含汇率行（¥4）。
- */
-export function buildMarkdown(input: MarkdownInput): string {
+ */export function buildMarkdown(input: MarkdownInput): string {
   const { locale, rate } = input;
   const t = (key: string, params?: Dict) => translate(locale, key, params);
   const out: string[] = [];
@@ -264,7 +266,7 @@ export function buildMarkdown(input: MarkdownInput): string {
   const to = lastRow !== undefined ? lastRow.day : "";
   out.push(`# ${t("md.title", { window: input.windowLabel, from, to, tz: input.timezone })}`);
   out.push("");
-  out.push(`${t("md.rate", { rate: rate.toFixed(2) })} · ${t("md.generated")}：${formatDateTime(input.generatedAt, input.timezone)}`);
+  out.push(`${t("md.rate", { rate: rate.toFixed(2), source: t(input.rateSource === "auto" ? "rate.source.auto" : "rate.source.manual") })} · ${t("md.generated")}：${formatDateTime(input.generatedAt, input.timezone)}`);
   out.push("");
 
   // 概览

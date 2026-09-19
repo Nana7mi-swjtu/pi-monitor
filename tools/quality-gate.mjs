@@ -98,20 +98,49 @@ await check("AC-15.1 index.ts 无 TUI 专属 API", () => {
   return hits.length === 0 ? true : hits.join(", ");
 });
 
-// 3) NFR-7：零出站请求
-await check("NFR-7 无外网目标", () => {
+/** ¥8：唯一允许的出站主机白名单（除回环地址以外）。 */
+const RATE_HOST_ALLOWLIST = new Set(["open.er-api.com", "api.frankfurter.dev", "api.exchangerate-api.com"]);
+
+// 3) NFR-7：除回环地址与汇率接口外，零出站目标
+await check("NFR-7 出站目标只允许回环地址与汇率接口", () => {
   const offenders = [];
   for (const file of productionFiles) {
-    const body = stripCommentsAndStrings(fs.readFileSync(file, "utf8"));
-    const urls = body.match(/https?:\/\/[^\s"'`)]+/g) ?? [];
-    // 生产代码里不应出现任何 URL（打开浏览器的 URL 由运行时拼装）。
-    if (urls.length > 0) offenders.push(`${rel(file)}: ${urls.join(" ")}`);
-  }
-  const assets = fs.readFileSync(path.join(root, "src", "dashboard", "assets.ts"), "utf8");
-  for (const url of assets.match(/https?:\/\/[^\s"'`)]+/g) ?? []) {
-    if (!/^https?:\/\/(127\.0\.0\.1|localhost|::1)/.test(url)) offenders.push(`assets.ts: ${url}`);
+    const body = fs.readFileSync(file, "utf8");
+    for (const url of body.match(/https?:\/\/[^\s"'`)]+/g) ?? []) {
+      // 本机仪表盘地址（127.0.0.1 / localhost / ::1）始终允许。
+      if (/^https?:\/\/(127\.0\.0\.1|localhost|::1)/.test(url)) continue;
+      // ¥8：汇率接口只能出现在 src/rates.ts，且主机必须在白名单内。
+      if (rel(file) !== "src/rates.ts") {
+        offenders.push(`${rel(file)}: ${url}`);
+        continue;
+      }
+      let host = "";
+      try {
+        host = new URL(url).host;
+      } catch {
+        host = "";
+      }
+      if (!RATE_HOST_ALLOWLIST.has(host)) offenders.push(`src/rates.ts: ${url}（主机不在白名单）`);
+      if (!url.startsWith("https://")) offenders.push(`src/rates.ts: ${url}（必须 https）`);
+    }
   }
   return offenders.length === 0 ? true : offenders.join("; ");
+});
+
+// 3b) ¥8：联网必须由配置开关把关，且不是除了 rates.ts 还有别的出口
+await check("¥8 汇率联网由 currency.autoRate 把关且出口唯一", () => {
+  const rates = fs.readFileSync(path.join(root, "src", "rates.ts"), "utf8");
+  for (const token of ["RATE_PROVIDERS", "fetchUsdCnyRate", "pickCnyRate", "isRateStale", "AUTO_RATE_TTL_MS"]) {
+    if (!rates.includes(token)) return `src/rates.ts 缺少 ${token}`;
+  }
+  const api = fs.readFileSync(path.join(root, "src", "dashboard", "api.ts"), "utf8");
+  if (!/currency\.autoRate/.test(api)) return "api.ts 未按 currency.autoRate 把关";
+  if (!/force/.test(api)) return "api.ts 缺少显式手动更新通道（force）";
+  // 服务端不得绕过 rates.ts 自行调用 fetch（assets.ts 是浏览器侧同源请求，不算）。
+  const offenders = productionFiles
+    .filter((file) => rel(file) !== "src/rates.ts" && rel(file) !== "src/dashboard/assets.ts")
+    .filter((file) => /\bfetch\s*\(/.test(stripComments(fs.readFileSync(file, "utf8"))));
+  return offenders.length === 0 ? true : offenders.map(rel).join(", ");
 });
 
 // 4) P-1：不得针对测试/fixture 特判

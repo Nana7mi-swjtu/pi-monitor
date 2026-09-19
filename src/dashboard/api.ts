@@ -6,9 +6,10 @@
  */
 
 import { buildAggregate, buildComparison, type Metric } from "../aggregate.ts";
-import { updateConfigFile, type LoadedConfig } from "../config.ts";
+import { WRITABLE_CONFIG_PATHS, flatten, updateConfigFile, writeCurrencyState, type LoadedConfig } from "../config.ts";
 import { buildHealthReport, measureIndexSize, type HealthReport } from "../health.ts";
 import { windowLabel } from "../i18n.ts";
+import { fetchUsdCnyRate, isRateStale, type RateAttempt, type RateFetcher } from "../rates.ts";
 import type { MonitorEngine } from "../scanner.ts";
 import { civilDayDiff, dayKey, heatmapGridRange, heatmapRange, isValidTimezone, parseWindowInput, previousWindow, resolveTimezone, resolveWindow } from "../time.ts";
 import type {
@@ -18,6 +19,7 @@ import type {
   HeatmapGrid,
   Locale,
   QueryFilters,
+  RateSource,
   UsageRecord,
   WindowSpec,
 } from "../types.ts";
@@ -32,6 +34,8 @@ export interface MonitorContext {
   lockTimeout: boolean;
   /** 本次进程内的会话 id（用于「本会话」实时卡）。 */
   sessionId: string | null;
+  /** 汇率请求的可注入实现（测试用）；缺省时用全局 `fetch`。 */
+  rateFetcher?: RateFetcher;
 }
 
 export interface QueryOptions {
@@ -125,6 +129,7 @@ export function buildSummary(ctx: MonitorContext, query: QueryOptions): Aggregat
     window,
     filters,
     rate,
+    rateSource: ctx.engine.config.currency.rateSource,
     weekStart: ctx.engine.config.weekStart,
     now: Date.now(),
     locale: ctx.locale,
@@ -155,6 +160,7 @@ export function buildDaily(ctx: MonitorContext, query: QueryOptions): AggregateR
     window,
     filters: readFilters(query),
     rate: ctx.engine.config.currency.rate,
+    rateSource: ctx.engine.config.currency.rateSource,
     weekStart,
     now,
     locale: ctx.locale,
@@ -166,11 +172,13 @@ export function buildDaily(ctx: MonitorContext, query: QueryOptions): AggregateR
   // 8.4：网格区间由服务端给出，前端不得自行实现周对齐。
   // `window=all` 的真实末日由 aggregate 回填到 `result.window.to`。
   const anchorDay = result.window.to.length > 0 ? result.window.to : dayKey(now, tz);
-  const fromDay = year === null ? anchorDay : `${year}-01-01`;
-  const toDay = year === null ? anchorDay : `${year}-12-31`;
   const span = year === null
     ? heatmapRange(anchorDay, weekStart, 53)
-    : heatmapGridRange(fromDay, toDay, weekStart);
+    : heatmapGridRange(`${year}-01-01`, `${year}-12-31`, weekStart);
+  // AC-8.8：`recent` 模式的统计范围就是这 53 周网格本身（否则除锚点日以外的格子
+  // 会被当成补齐格而不着色）；`year` 模式的统计范围是该自然年，网格首尾多余日为补齐格。
+  const fromDay = year === null ? span.startDay : `${year}-01-01`;
+  const toDay = year === null ? span.endDay : `${year}-12-31`;
   const grid: HeatmapGrid = {
     startDay: span.startDay,
     endDay: span.endDay,
@@ -201,6 +209,7 @@ export function buildBreakdown(ctx: MonitorContext, query: QueryOptions): Aggreg
     window,
     filters: readFilters(query),
     rate: ctx.engine.config.currency.rate,
+    rateSource: ctx.engine.config.currency.rateSource,
     weekStart: ctx.engine.config.weekStart,
     now: Date.now(),
     locale: ctx.locale,
@@ -220,6 +229,7 @@ export function buildExport(ctx: MonitorContext, query: QueryOptions): Aggregate
     window,
     filters: readFilters(query),
     rate: ctx.engine.config.currency.rate,
+    rateSource: ctx.engine.config.currency.rateSource,
     weekStart: ctx.engine.config.weekStart,
     now: Date.now(),
     locale: ctx.locale,
@@ -242,6 +252,7 @@ export function buildToolAggregate(ctx: MonitorContext, query: QueryOptions, lim
     window,
     filters: readFilters(query),
     rate: ctx.engine.config.currency.rate,
+    rateSource: ctx.engine.config.currency.rateSource,
     weekStart: ctx.engine.config.weekStart,
     now: Date.now(),
     locale: ctx.locale,
@@ -319,7 +330,16 @@ export interface BudgetProgressPayload {
 export interface ConfigResponse {
   locale: Locale;
   localeSetting: string;
-  currency: { code: "CNY"; symbol: "¥"; rate: number; rateSource: "manual" };
+  currency: {
+    code: "CNY";
+    symbol: "¥";
+    rate: number;
+    rateSource: RateSource;
+    /** ¥8：是否允许联网自动获取汇率。 */
+    autoRate: boolean;
+    /** 上次自动获取时间（ISO）或 null；用于「是否过期」判定。 */
+    rateFetchedAt: string | null;
+  };
   theme: string;
   timezone: string;
   weekStart: string;
@@ -333,7 +353,14 @@ export interface ConfigResponse {
     injectMessage: boolean;
   };
   budgetProgress: { daily: BudgetProgressPayload | null; monthly: BudgetProgressPayload | null };
-  dashboard: { allowLan: boolean; port: number; stopOnExit: boolean; linkMessage: boolean; enabled: boolean };
+  dashboard: {
+    allowLan: boolean;
+    port: number;
+    stopOnExit: boolean;
+    linkMessage: boolean;
+    enabled: boolean;
+    autoRefresh: boolean;
+  };
   tool: { enabled: boolean };
   tableLimit: number;
   defaultWindow: string | number;
@@ -358,6 +385,7 @@ export function buildConfigResponse(ctx: MonitorContext): ConfigResponse {
     window: resolveWindow({ kind: "today" }, { tz, weekStart, now }),
     filters: {},
     rate,
+    rateSource: config.currency.rateSource,
     weekStart,
     now,
     locale: ctx.locale,
@@ -368,6 +396,7 @@ export function buildConfigResponse(ctx: MonitorContext): ConfigResponse {
     window: resolveWindow({ kind: "month" }, { tz, weekStart, now }),
     filters: {},
     rate,
+    rateSource: config.currency.rateSource,
     weekStart,
     now,
     locale: ctx.locale,
@@ -377,7 +406,14 @@ export function buildConfigResponse(ctx: MonitorContext): ConfigResponse {
   return {
     locale: ctx.locale,
     localeSetting: config.locale,
-    currency: { code: "CNY", symbol: "¥", rate, rateSource: "manual" },
+    currency: {
+      code: "CNY",
+      symbol: "¥",
+      rate,
+      rateSource: config.currency.rateSource,
+      autoRate: config.currency.autoRate,
+      rateFetchedAt: config.currency.rateFetchedAt,
+    },
     theme: config.dashboard.theme,
     timezone: tz,
     weekStart,
@@ -395,18 +431,8 @@ export function buildConfigResponse(ctx: MonitorContext): ConfigResponse {
     tool: { ...config.tool },
     tableLimit: config.tableLimit,
     defaultWindow: config.defaultWindow,
-    writableKeys: [
-      "currency.rate",
-      "dashboard.theme",
-      "dashboard.allowLan",
-      "locale",
-      "budget.enabled",
-      "budget.dailyCNY",
-      "budget.monthlyCNY",
-      "budget.warnAt",
-      "budget.includeEstimated",
-      "budget.injectMessage",
-    ],
+    // FR-11.6：可写键列表直接来自配置层白名单，避免两处漂移。
+    writableKeys: [...WRITABLE_CONFIG_PATHS],
     warnings: ctx.loaded.warnings,
     readOnly: ctx.readOnly || ctx.engine.readOnly,
   };
@@ -444,16 +470,147 @@ export function applyConfigUpdate(ctx: MonitorContext, patch: Record<string, unk
   if (!result.ok) {
     return { ok: false, rejected: result.rejected, warnings: ctx.loaded.warnings, unknownKeys: ctx.loaded.unknownKeys };
   }
-  ctx.loaded = {
-    config: result.config,
-    warnings: result.warnings,
-    unknownKeys: result.unknownKeys,
-    raw: ctx.loaded.raw,
-    exists: true,
-  };
-  // ¥5：汇率变更立即生效，且不改变历史成本的美元值与账本 revision。
-  ctx.engine.setConfig(result.config);
+  // ¥4 / ¥8：用户手动写入 `currency.rate` 就把来源标为「手动设置」并清空获取时间；
+  // 否则在下一次自动获取之前，页头会被错误地标成「自动获取」。
+  const manualRate = flatten(patch)["currency.rate"] !== undefined;
+  const next: LoadedConfig = manualRate
+    ? writeCurrencyState(
+        ctx.configPath,
+        { config: result.config, warnings: result.warnings, unknownKeys: result.unknownKeys, raw: result.raw, exists: true },
+        { rateSource: "manual", rateFetchedAt: null },
+      )
+    : { config: result.config, warnings: result.warnings, unknownKeys: result.unknownKeys, raw: result.raw, exists: true };
+  // 就地更新（不换对象）：扩展与 engine 共享同一个 LoadedConfig 引用。
+  adoptConfig(ctx, next);
   return { ok: true, rejected: [], warnings: result.warnings, unknownKeys: result.unknownKeys };
+}
+
+/** 把新的 `LoadedConfig` 合并进现有上下文与引擎（¥5：汇率变更立即生效且不动 revision）。 */
+function adoptConfig(ctx: MonitorContext, next: LoadedConfig): void {
+  ctx.loaded.config = next.config;
+  ctx.loaded.warnings = next.warnings;
+  ctx.loaded.unknownKeys = next.unknownKeys;
+  ctx.loaded.raw = next.raw;
+  ctx.loaded.exists = next.exists;
+  ctx.engine.setConfig(next.config);
+}
+
+export interface AutoRateOutcome {
+  ok: boolean;
+  /** 本次是否真的重新取回了汇率（false = 不需要或不符条件）。 */
+  applied: boolean;
+  /** ¥8 开关是否打开。 */
+  autoRate: boolean;
+  /** 本次调用后是否需要（仍需要）联网取回。 */
+  stale: boolean;
+  rate: number;
+  rateSource: RateSource;
+  fetchedAt: string | null;
+  asOf: string | null;
+  provider: string | null;
+  /** 失败原因（单行）；成功时为 null。 */
+  reason: string | null;
+  attempts: RateAttempt[];
+}
+
+/** ¥8：当前是否处于「需要重新联网取汇率」的状态。 */
+export function isAutoRateStale(ctx: MonitorContext, nowMs = Date.now()): boolean {
+  const config = ctx.engine.config;
+  if (!config.currency.autoRate) return false;
+  if (config.currency.rateSource !== "auto") return true;
+  return isRateStale(config.currency.rateFetchedAt, nowMs);
+}
+
+/**
+ * ¥8：按开关与 TTL 获取并应用自动汇率。
+ *  - `force: true`（仪表盘「立即更新」/`POST /api/rate/refresh`）：忽略 TTL 与开关，强制取一次；
+ *  - 默认：仅在 `currency.autoRate` 打开且 已过期（或从未取过）时才联网；
+ *  - 任何失败都不影响现有汇率（只回退到上次的值）；
+ *  - 只读模式（高版本索引 / 锁超时）不写盘。
+ */
+export async function refreshAutoRate(
+  ctx: MonitorContext,
+  options: { force?: boolean; nowMs?: number } = {},
+): Promise<AutoRateOutcome> {
+  const force = options.force === true;
+  const nowMs = options.nowMs ?? Date.now();
+  const config = ctx.engine.config;
+  const current = {
+    rate: config.currency.rate,
+    rateSource: config.currency.rateSource,
+    fetchedAt: config.currency.rateFetchedAt,
+  };
+
+  if (!force && !isAutoRateStale(ctx, nowMs)) {
+    return {
+      ok: true,
+      applied: false,
+      autoRate: config.currency.autoRate,
+      stale: false,
+      rate: current.rate,
+      rateSource: current.rateSource,
+      fetchedAt: current.fetchedAt,
+      asOf: null,
+      provider: null,
+      reason: null,
+      attempts: [],
+    };
+  }
+
+  const result = await fetchUsdCnyRate(
+    ctx.rateFetcher === undefined ? { now: () => nowMs } : { fetcher: ctx.rateFetcher, now: () => nowMs },
+  );
+  if (result.quote === null) {
+    const failed = result.attempts.filter((attempt) => !attempt.ok && attempt.reason !== undefined);
+    const reason = failed.length > 0
+      ? `${failed[0]!.provider}: ${failed[0]!.reason}`
+      : "没有可用的汇率来源";
+    return {
+      ok: false,
+      applied: false,
+      autoRate: config.currency.autoRate,
+      stale: config.currency.autoRate,
+      rate: current.rate,
+      rateSource: current.rateSource,
+      fetchedAt: current.fetchedAt,
+      asOf: null,
+      provider: null,
+      reason,
+      attempts: result.attempts,
+    };
+  }
+
+  if (!ctx.readOnly && !ctx.engine.readOnly) {
+    adoptConfig(
+      ctx,
+      writeCurrencyState(ctx.configPath, ctx.loaded, {
+        rate: result.quote.rate,
+        rateSource: "auto",
+        rateFetchedAt: result.fetchedAt,
+      }),
+    );
+  } else {
+    // 只读运行：内存里仍然用取到的汇率展示（¥5：不写盘、不动 revision）。
+    const next = structuredClone(ctx.engine.config);
+    next.currency.rate = result.quote.rate;
+    next.currency.rateSource = "auto";
+    next.currency.rateFetchedAt = result.fetchedAt;
+    ctx.engine.setConfig(next);
+  }
+
+  return {
+    ok: true,
+    applied: true,
+    autoRate: ctx.engine.config.currency.autoRate,
+    stale: false,
+    rate: ctx.engine.config.currency.rate,
+    rateSource: ctx.engine.config.currency.rateSource,
+    fetchedAt: ctx.engine.config.currency.rateFetchedAt,
+    asOf: result.quote.asOf,
+    provider: result.quote.provider,
+    reason: null,
+    attempts: result.attempts,
+  };
 }
 
 export interface DedupeResponse {

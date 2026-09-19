@@ -7,7 +7,7 @@
  * 资产以字符串常量内嵌，运行时拼装（10.3）：不使用 public/ 外链，避免打包与路径问题。
  */
 
-import type { Locale } from "../types.ts";
+import type { Locale, RateSource } from "../types.ts";
 
 export interface RenderOptions {
   locale: Locale;
@@ -18,7 +18,18 @@ export interface RenderOptions {
     theme: string;
     locale: string;
     tableLimit: number;
-    currency: { code: "CNY"; symbol: "¥"; rate: number; rateSource: "manual" };
+    /** ¥8：是否在页面上自动重取汇率（跟随 `currency.autoRate`）。 */
+    autoRate?: boolean;
+    /** 页面存活时的自动刷新开关（`dashboard.autoRefresh`）。 */
+    autoRefresh?: boolean;
+    currency: {
+      code: "CNY";
+      symbol: "¥";
+      rate: number;
+      rateSource: RateSource;
+      autoRate?: boolean;
+      rateFetchedAt?: string | null;
+    };
   };
 }
 
@@ -268,6 +279,39 @@ function heatmapMonthCols(grid) {
   }
   return out;
 }
+
+/*
+ * AC-8.8 / 10.1.4：热力图网格 → 单元格列表（纯函数，测试执行同一份源码）。
+ * pad 为真表示该日不属于统计范围（无背景、不可聚焦）；其余格子即使当日无记录
+ * 也按 0 值日上色（图例首档就是「0」）。
+ */
+function heatmapCells(grid, daily, edges) {
+  var byDay = {};
+  (daily || []).forEach(function (row) { byDay[row.day] = row; });
+  var levels = edges || [0, 0, 0];
+  var cells = [];
+  for (var i = 0; i < grid.weeks * 7; i += 1) {
+    var key = addDays(grid.startDay, i);
+    var pad = key < grid.fromDay || key > grid.toDay;
+    var row = pad ? null : byDay[key];
+    var value = row ? row.totals.tokens.billed : 0;
+    var level = 0;
+    if (value > 0) {
+      if (value <= levels[0]) level = 1;
+      else if (value <= levels[1]) level = 2;
+      else if (value <= levels[2]) level = 3;
+      else level = 4;
+    }
+    cells.push({
+      day: key,
+      pad: pad,
+      value: value,
+      sessions: row ? row.totals.sessions : 0,
+      level: pad ? 0 : level,
+    });
+  }
+  return cells;
+}
 `;
 
 const APP_JS = String.raw`
@@ -275,15 +319,32 @@ const APP_JS = String.raw`
 const BOOT = window.__PI_MONITOR_BOOT__;
 const TOKEN = BOOT.token;
 const I18N = BOOT.i18n;
+const BOOT_CONFIG = BOOT.config || {};
+const BOOT_CURRENCY = BOOT_CONFIG.currency || {};
+const BOOT_DASHBOARD = BOOT_CONFIG.dashboard || {};
+/* ¥8：自动汇率的重取间隔（与服务端 rates.AUTO_RATE_TTL_MS 一致）。 */
+const AUTO_RATE_TTL_MS = 12 * 60 * 60 * 1000;
+/* 页面存活时的自动刷新间隔（dashboard.autoRefresh）。 */
+const AUTO_REFRESH_MS = 30000;
+/* 汇率获取失败后的静默期（避免网络不通时每 30 s 重试）。 */
+const RATE_RETRY_BACKOFF_MS = 10 * 60 * 1000;
 const state = {
-  window: BOOT.config.defaultWindow || "last7d",
+  window: BOOT_CONFIG.defaultWindow || "last7d",
   from: null,
   to: null,
   /* AC-8.2 / D-3：图表固定按计费 Token 统计，不再有指标切换状态。 */
   dim: "model",
-  locale: BOOT.config.locale,
-  theme: BOOT.config.theme,
-  rate: BOOT.config.currency.rate,
+  locale: BOOT_CONFIG.locale,
+  theme: BOOT_CONFIG.theme,
+  rate: BOOT_CURRENCY.rate,
+  rateSource: BOOT_CURRENCY.rateSource || "manual",
+  rateFetchedAt: BOOT_CURRENCY.rateFetchedAt || null,
+  autoRate: BOOT_CURRENCY.autoRate === true,
+  autoRefresh: BOOT_DASHBOARD.autoRefresh !== false,
+  refreshTimer: null,
+  lastLoadAt: 0,
+  ratePending: false,
+  rateFailedAt: 0,
   summary: null,
   daily: null,
   heat: null,
@@ -293,7 +354,7 @@ const state = {
   heatYears: [],
   breakdown: null,
   health: null,
-  config: BOOT.config,
+  config: BOOT_CONFIG,
   loading: false,
   error: null,
   scanTimer: null,
@@ -363,6 +424,13 @@ function fmtCNY(value) { return fmtAmount(value, "\u00a5"); }
 function fmtUSD(value) { return fmtAmount(value, "$"); }
 function fmtPercent(ratio) { return isFinite(ratio) ? (ratio * 100).toFixed(1) + "%" : "0.0%"; }
 function fmtRate(rate) { return "1 USD = " + rate.toFixed(2) + " CNY"; }
+/* ¥8 / ¥4：汇率行必须可追溯到来源（手动设置 / 自动获取）。 */
+function rateSourceLabel() {
+  return state.rateSource === "auto" ? t("rate.source.auto") : t("rate.source.manual");
+}
+function rateText() {
+  return t("rate.line", { rate: state.rate.toFixed(2), source: rateSourceLabel() });
+}
 function fmtISO(date) {
   const p = function (n) { return n < 10 ? "0" + n : String(n); };
   return date.getFullYear() + "-" + p(date.getMonth() + 1) + "-" + p(date.getDate()) +
@@ -415,7 +483,11 @@ function renderChrome() {
   document.getElementById("btn-settings").textContent = t("action.settings");
   document.getElementById("btn-refresh").textContent = t("header.refresh");
   document.getElementById("btn-lang").textContent = state.locale === "zh-CN" ? "EN" : "\u4e2d\u6587";
-  document.getElementById("rate-line").textContent = t("rate.line", { rate: state.rate.toFixed(2) });
+  document.getElementById("rate-line").textContent = rateText();
+  document.getElementById("lbl-rate").textContent = t("settings.rate");
+  document.getElementById("lbl-autorate").textContent = t("settings.autoRate");
+  document.getElementById("lbl-autorefresh").textContent = t("settings.autoRefresh");
+  document.getElementById("btn-rate-refresh").textContent = t("settings.rateRefresh");
   document.getElementById("footer-privacy").textContent = t("footer.privacy");
   document.getElementById("footer-hint").textContent = t("footer.hint");
   document.getElementById("sec-overview").textContent = t("md.overview");
@@ -426,7 +498,6 @@ function renderChrome() {
   document.getElementById("sec-actions").textContent = t("action.settings");
   document.getElementById("sec-health").textContent = t("health.title");
   document.getElementById("drawer-title").textContent = t("settings.title");
-  document.getElementById("lbl-rate").textContent = t("settings.rate");
   document.getElementById("lbl-locale").textContent = t("settings.locale");
   document.getElementById("lbl-theme").textContent = t("settings.theme");
   document.getElementById("lbl-budget-enabled").textContent = t("settings.budgetEnabled");
@@ -567,30 +638,17 @@ function renderHeatmap() {
     node.innerHTML = ""; monthsNode.innerHTML = ""; daysNode.innerHTML = ""; legendNode.innerHTML = "";
     return;
   }
-  const byDay = {};
-  heat.daily.forEach(function (row) { byDay[row.day] = row; });
   const edges = (heat.buckets && heat.buckets.edges) || [0, 0, 0];
-  const level = function (value) {
-    if (value <= 0) return 0;
-    if (value <= edges[0]) return 1;
-    if (value <= edges[1]) return 2;
-    if (value <= edges[2]) return 3;
-    return 4;
-  };
 
   // 8.4：网格区间由服务端下发的 grid 给出（按 weekStart 对齐），前端不自算周对齐。
   // AC-8.2 / D-3：指标固定为计费 Token。
   const cells = [];
-  for (let i = 0; i < grid.weeks * 7; i += 1) {
-    const key = addDays(grid.startDay, i);
+  heatmapCells(grid, heat.daily, edges).forEach(function (cell) {
     // 8.4：补齐格（不属于统计范围）不算 0 值日，无背景也不可聚焦。
-    if (key < grid.fromDay || key > grid.toDay) { cells.push("<span class=\"cell pad\"></span>"); continue; }
-    const row = byDay[key];
-    const value = row ? row.totals.tokens.billed : 0;
-    const sessions = row ? row.totals.sessions : 0;
-    const label = t("heatmap.cell", { day: key, value: fmtInt(value), sessions: sessions });
-    cells.push("<span class=\"cell l" + level(value) + "\" tabindex=\"0\" role=\"img\" title=\"" + esc(label) + "\" aria-label=\"" + esc(label) + "\"></span>");
-  }
+    if (cell.pad) { cells.push("<span class=\"cell pad\"></span>"); return; }
+    const label = t("heatmap.cell", { day: cell.day, value: fmtInt(cell.value), sessions: cell.sessions });
+    cells.push("<span class=\"cell l" + cell.level + "\" tabindex=\"0\" role=\"img\" title=\"" + esc(label) + "\" aria-label=\"" + esc(label) + "\"></span>");
+  });
   node.innerHTML = cells.join("");
 
   // AC-8.7：上方月份标签行（与网格同处一个滚动容器，列对齐不会错位）。
@@ -710,6 +768,7 @@ function renderHealth() {
     ["health.skippedFiles", fmtInt(health.skippedFiles)],
     ["health.ledgerRepaired", fmtInt(health.ledgerRepaired)],
     ["health.tz", health.tz + (health.tzChanged ? " \u26a0" : "")],
+    ["health.rateSource", rateSourceLabel() + (state.rateFetchedAt ? " \u00b7 " + fmtISO(new Date(state.rateFetchedAt)) : "")],
     ["health.lastScanMs", fmtInt(health.lastScanMs) + " ms"],
     ["health.indexSize", fmtInt(Math.round(health.indexSizeBytes / 1024)) + " KiB"],
     ["health.dataDir", health.dataDir],
@@ -757,9 +816,7 @@ async function loadAll() {
       api("/api/breakdown?" + query({ dim: state.dim, limit: state.config.tableLimit || 20 })),
     ]);
     state.health = health;
-    state.config = config;
-    state.rate = config.currency.rate;
-    if (config.locale) state.locale = config.locale;
+    applyConfigState(config);
     state.summary = summary;
     state.daily = daily;
     state.heatAll = heatAll;
@@ -773,10 +830,22 @@ async function loadAll() {
       : await api("/api/daily?year=" + state.heatYear + "&metric=tokens");
     state.breakdown = breakdown;
     setError(null);
+    // ¥8：汇率已过 TTL → 后台取一次（不阻塞首屏）；取到新值后用新汇率重新聚合一次。
+    if (
+      config.currency && config.currency.autoRate && rateIsStale(config.currency.rateFetchedAt) &&
+      !state.ratePending && !rateBackoffActive()
+    ) {
+      state.ratePending = true;
+      refreshRate(false).then(function (changed) {
+        state.ratePending = false;
+        if (changed) loadAll();
+      }, function () { state.ratePending = false; });
+    }
   } catch (error) {
     setError(error);
   } finally {
     state.loading = false;
+    state.lastLoadAt = Date.now();
     renderChrome();
     renderWarnings();
     renderScanState();
@@ -790,6 +859,50 @@ async function loadAll() {
   }
   if (state.health && state.health.scanning) scheduleScanPoll();
 }
+/* ¥8：汇率信息同步到页面状态（服务端是唯一真相）。 */
+function applyConfigState(config) {
+  if (!config) return;
+  state.config = config;
+  const currency = config.currency || {};
+  if (typeof currency.rate === "number") state.rate = currency.rate;
+  if (currency.rateSource) state.rateSource = currency.rateSource;
+  state.rateFetchedAt = currency.rateFetchedAt || null;
+  state.autoRate = currency.autoRate === true;
+  if (config.locale) state.locale = config.locale;
+  if (config.dashboard && config.dashboard.autoRefresh === false) state.autoRefresh = false;
+}
+function rateIsStale(fetchedAt) {
+  if (!fetchedAt) return true;
+  const parsed = Date.parse(fetchedAt);
+  return !isFinite(parsed) || (Date.now() - parsed) >= AUTO_RATE_TTL_MS;
+}
+function rateBackoffActive() {
+  return state.rateFailedAt > 0 && (Date.now() - state.rateFailedAt) < RATE_RETRY_BACKOFF_MS;
+}
+
+/* 页面存活时的自动刷新（默认开启；可在设置抽屉关闭）。 */
+function scheduleAutoRefresh() {
+  if (state.refreshTimer) { clearInterval(state.refreshTimer); state.refreshTimer = null; }
+  if (!state.autoRefresh) return;
+  state.refreshTimer = setInterval(function () {
+    // 隐藏的标签页不扫（省 IO）；重新可见时由 visibilitychange 处补一数。
+    if (document.hidden) return;
+    autoRefresh();
+  }, AUTO_REFRESH_MS);
+}
+async function autoRefresh() {
+  if (state.loading || state.scanTimer) return;
+  try {
+    await api("/api/rescan", { method: "POST" });
+    await loadAll();
+  } catch (error) { /* 静默：下一个周期重试 */ }
+}
+async function refreshOnFocus() {
+  if (state.loading || state.scanTimer) return;
+  if (Date.now() - state.lastLoadAt < AUTO_REFRESH_MS / 2) return;
+  await autoRefresh();
+}
+
 function scheduleScanPoll() {
   if (state.scanTimer) return;
   state.scanTimer = setTimeout(async function () {
@@ -846,7 +959,7 @@ async function exportMarkdown() {
   const lines = [];
   lines.push("# pi-monitor report \u00b7 " + result.window.label + " (" + result.window.from + " \u2192 " + result.window.to + ", " + result.window.tz + ")");
   lines.push("");
-  lines.push(t("md.rate", { rate: rate.toFixed(2) }) + " \u00b7 " + t("md.generated") + ": " + fmtISO(new Date(result.generatedAt)));
+  lines.push(t("md.rate", { rate: rate.toFixed(2), source: result.currency.rateSource === "auto" ? t("rate.source.auto") : t("rate.source.manual") }) + " \u00b7 " + t("md.generated") + ": " + fmtISO(new Date(result.generatedAt)));
   lines.push("");
   lines.push("## " + t("md.overview"));
   const headers = [t("md.metric"), result.window.label];
@@ -919,6 +1032,12 @@ function openDrawer(open) {
 function fillSettings() {
   const config = state.config;
   document.getElementById("set-rate").value = String(config.currency.rate);
+  document.getElementById("set-autorate").checked = !!config.currency.autoRate;
+  document.getElementById("set-autorefresh").checked = state.autoRefresh;
+  document.getElementById("set-rate-note").textContent = t("settings.rateNote", {
+    source: rateSourceLabel(),
+    time: state.rateFetchedAt ? fmtISO(new Date(state.rateFetchedAt)) : "\u2014",
+  });
   document.getElementById("set-locale").value = state.locale;
   document.getElementById("set-theme").value = state.theme;
   document.getElementById("set-budget-enabled").checked = !!config.budget.enabled;
@@ -932,8 +1051,8 @@ async function saveSettings() {
   const daily = document.getElementById("set-daily").value;
   const monthly = document.getElementById("set-monthly").value;
   const patch = {
-    currency: { rate: Number(document.getElementById("set-rate").value) },
-    dashboard: { theme: document.getElementById("set-theme").value, allowLan: document.getElementById("set-lan").checked },
+    currency: { rate: Number(document.getElementById("set-rate").value), autoRate: document.getElementById("set-autorate").checked },
+    dashboard: { theme: document.getElementById("set-theme").value, allowLan: document.getElementById("set-lan").checked, autoRefresh: document.getElementById("set-autorefresh").checked },
     locale: document.getElementById("set-locale").value,
     budget: {
       enabled: document.getElementById("set-budget-enabled").checked,
@@ -952,25 +1071,61 @@ async function saveSettings() {
     showToast(t("settings.saved"));
     state.theme = patch.dashboard.theme;
     state.locale = patch.locale;
+    state.autoRate = patch.currency.autoRate;
+    state.autoRefresh = patch.dashboard.autoRefresh;
     applyTheme();
+    scheduleAutoRefresh();
     await loadAll();
   } catch (error) {
     showToast(t("settings.writeFailed", { reason: String(error.message || error) }));
   }
 }
-async function rescan() {
+/*
+ * ¥8：汇率刷新（手动点「立即更新」= notify 为真）。
+ * 返回 true 表示汇率发生变化、页面数据需要用新汇率重新聚合并重渲染。
+ */
+async function refreshRate(notify) {
+  try {
+    const result = await api("/api/rate/refresh", { method: "POST" });
+    const before = state.rate;
+    if (typeof result.rate === "number") state.rate = result.rate;
+    if (result.rateSource) state.rateSource = result.rateSource;
+    state.rateFetchedAt = result.fetchedAt || state.rateFetchedAt;
+    if (typeof result.autoRate === "boolean") state.autoRate = result.autoRate;
+    renderChrome();
+    if (!result.ok) {
+      state.rateFailedAt = Date.now();
+      if (notify) showToast(t("rate.auto.failed", { reason: result.reason || "unknown" }));
+      return false;
+    }
+    state.rateFailedAt = 0;
+    if (notify) showToast(t("rate.auto.applied", { rate: state.rate.toFixed(2) }));
+    return before !== state.rate;
+  } catch (error) {
+    state.rateFailedAt = Date.now();
+    if (notify) showToast(t("rate.auto.failed", { reason: String(error.message || error) }));
+    return false;
+  }
+}
+
+/* AC-8.4 / ¥8：重新扫描并重载（「刷新」按钮与自动刷新共用）。 */
+async function rescan(notify, message) {
   const button = document.getElementById("btn-rescan");
+  const refreshButton = document.getElementById("btn-refresh");
   button.disabled = true;
+  refreshButton.disabled = true;
   try {
     await api("/api/rescan", { method: "POST" });
     await loadAll();
-    showToast(t("action.rescan") + " \u2713");
+    if (notify) showToast(message || (t("action.rescan") + " \u2713"));
   } catch (error) {
     showToast(String(error.message || error));
   } finally {
     button.disabled = false;
+    refreshButton.disabled = false;
   }
 }
+
 async function rebuild() {
   const answer = window.prompt(t("action.rebuildConfirm"), "");
   if (answer !== "REBUILD") return;
@@ -1014,7 +1169,7 @@ function wire() {
   });
   // AC-8.9：列宽依赖容器宽度，改变窗口尺寸后必须重算。
   window.addEventListener("resize", function () { renderTrend(); });
-  document.getElementById("btn-refresh").addEventListener("click", loadAll);
+  document.getElementById("btn-refresh").addEventListener("click", function () { rescan(true, t("header.refreshed")); });
   document.getElementById("btn-lang").addEventListener("click", function () {
     state.locale = state.locale === "zh-CN" ? "en-US" : "zh-CN";
     // FR-13.4：语言切换即时生效（前端字典切换，无需刷新页面）。
@@ -1039,7 +1194,11 @@ function wire() {
     });
     loadAll();
   });
-  document.getElementById("btn-rescan").addEventListener("click", rescan);
+  document.getElementById("btn-rescan").addEventListener("click", function () { rescan(true); });
+  document.getElementById("btn-rate-refresh").addEventListener("click", async function () {
+    const changed = await refreshRate(true);
+    if (changed) await loadAll(); else renderChrome();
+  });
   document.getElementById("btn-rebuild").addEventListener("click", rebuild);
   document.getElementById("btn-export-md").addEventListener("click", function () { exportMarkdown().catch(function (e) { showToast(String(e.message || e)); }); });
   document.getElementById("btn-export-json").addEventListener("click", function () { exportJson().catch(function (e) { showToast(String(e.message || e)); }); });
@@ -1051,6 +1210,10 @@ function wire() {
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
   }
+  // AC-8.4：切回本页时不必等下一个周期（用户刚用完 token 回到仪表盘）。
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshOnFocus();
+  });
 }
 
 /* FR-8.5：加载后无未捕获 JS 异常（window.onerror 为空）。 */
@@ -1060,6 +1223,7 @@ window.addEventListener("error", function (event) {
 applyTheme();
 wire();
 renderChrome();
+scheduleAutoRefresh();
 loadAll();
 `;
 
@@ -1184,6 +1348,9 @@ export function renderDashboardHtml(options: RenderOptions): string {
 <aside class="drawer" id="drawer" data-open="false" aria-label="settings">
   <h2 class="sec"><span id="drawer-title">settings</span> <button type="button" id="btn-close-drawer" style="margin-left:auto">×</button></h2>
   <div class="row"><label for="set-rate" id="lbl-rate"></label><input type="number" id="set-rate" step="0.01" min="0.01" max="100"></div>
+  <div class="row"><label><input type="checkbox" id="set-autorate"> <span id="lbl-autorate"></span></label><button type="button" id="btn-rate-refresh"></button></div>
+  <div class="row muted" id="set-rate-note" style="font-size:12px"></div>
+  <div class="row"><label><input type="checkbox" id="set-autorefresh"> <span id="lbl-autorefresh"></span></label></div>
   <div class="row"><label for="set-locale" id="lbl-locale"></label><select id="set-locale"><option value="zh-CN">中文</option><option value="en-US">English</option></select></div>
   <div class="row"><label for="set-theme" id="lbl-theme"></label><select id="set-theme"><option value="auto">auto</option><option value="light">light</option><option value="dark">dark</option></select></div>
   <div class="row"><label><input type="checkbox" id="set-budget-enabled"> <span id="lbl-budget-enabled"></span></label></div>

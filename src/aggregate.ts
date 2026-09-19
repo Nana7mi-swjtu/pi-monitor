@@ -18,6 +18,7 @@ import type {
   MetaInfo,
   MoneyTotals,
   QueryFilters,
+  RateSource,
   TokenTotals,
   Totals,
   UsageRecord,
@@ -263,6 +264,8 @@ export interface AggregateOptions {
   window: WindowSpec;
   filters: QueryFilters;
   rate: number;
+  /** ¥8：汇率的来源（manual / auto），仅用于展示。 */
+  rateSource?: RateSource;
   weekStart: WeekStart;
   now: number;
   locale: string;
@@ -312,7 +315,7 @@ export function buildAggregate(options: AggregateOptions): AggregateOutcome {
   const result: AggregateResult = {
     schemaVersion: 1,
     generatedAt: new Date(options.now).toISOString(),
-    currency: { code: "CNY", symbol: "¥", rate, rateSource: "manual" },
+    currency: { code: "CNY", symbol: "¥", rate, rateSource: options.rateSource ?? "manual" },
     window: {
       from: effectiveWindow.from,
       to: effectiveWindow.to,

@@ -1,7 +1,9 @@
 {
   "_note": "人工校对（PRD P-6 / AC-13.1）：仪表盘关键文案的 en-US 期望值（标题、列名、单位、按钮）。",
   "app.title": "pi-monitor",
-  "rate.line": "Rate 1 USD = {rate} CNY (manual)",
+  "rate.line": "Rate 1 USD = {rate} CNY ({source})",
+  "rate.source.manual": "manual",
+  "rate.source.auto": "auto-fetched",
   "card.billed": "Billed tokens",
   "card.input": "Input",
   "card.output": "Output",

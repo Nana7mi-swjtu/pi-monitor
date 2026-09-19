@@ -11,11 +11,12 @@
     "currency": {
       "type": "object",
       "required": ["code", "symbol", "rate", "rateSource"],
+      "additionalProperties": false,
       "properties": {
         "code": { "const": "CNY" },
         "symbol": { "const": "¥" },
         "rate": { "type": "number", "minimum": 0.01, "maximum": 100 },
-        "rateSource": { "const": "manual" }
+        "rateSource": { "enum": ["manual", "auto"] }
       }
     },
     "window": {
