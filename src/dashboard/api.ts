@@ -114,7 +114,7 @@ function labelFor(locale: Locale): (window: WindowSpec) => string {
   return (window) => windowLabel(locale, window);
 }
 
-/** `GET /api/summary`：`Totals` + 环比 + `live`（10.2）。 */
+/** `GET /api/summary`：`Totals` + 环比（10.2）。 */
 export function buildSummary(ctx: MonitorContext, query: QueryOptions): AggregateResult {
   const tz = resolveQueryTimezone(ctx, query);
   const window = resolveQueryWindow(ctx, query, tz);
@@ -133,7 +133,6 @@ export function buildSummary(ctx: MonitorContext, query: QueryOptions): Aggregat
     weekStart: ctx.engine.config.weekStart,
     now: Date.now(),
     locale: ctx.locale,
-    live: ctx.engine.getLiveTotals(rate),
     health: ctx.engine.meta,
     comparison,
     labelFor: labelFor(ctx.locale),

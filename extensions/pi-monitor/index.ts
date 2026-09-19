@@ -1,8 +1,8 @@
 /**
  * extensions/pi-monitor/index.ts — 唯一扩展入口。
- * 需求：FR-4（实时采集）、FR-6（`/tokens`，唯一命令）、FR-7（`token_stats` 工具）、
- *       FR-10（预算提醒）、FR-14、FR-15（通道契约）、AC-6.1~AC-6.9、AC-7.1~AC-7.5、
- *       AC-15.1~AC-15.4、NFR-5、NFR-9、19 附录 A（扩展 API 事实清单）
+ * 需求：FR-4（临时会话落盘）、FR-6（`/tokens`，唯一命令）、FR-7（`token_stats` 工具）、
+ *       FR-10（预算提醒）、FR-11（配置）、FR-14、FR-15（通道契约）、AC-6.1~AC-6.9、
+ *       AC-7.1~AC-7.5、AC-15.1~AC-15.4、NFR-5、NFR-9、19 附录 A（扩展 API 事实清单）
  *
  * 通道约束（FR-15，禁止项）：
  *  - 禁止 `ctx.ui.custom` / `setStatus` / `setWidget` / `setFooter` / 任何 TUI 组件（AC-15.1）。
@@ -39,7 +39,8 @@ const TOOL_TEXT_LIMIT = 1024;
 /** FR-7.2：`limit` 上限 200。 */
 const TOOL_LIMIT_MAX = 200;
 
-interface LiveEntry {
+/** FR-4：临时会话（无会话文件）待落盘的 usage 条目。 */
+interface EphemeralUsageEntry {
   kind: RecordKind;
   toolName: string | null;
   usage: unknown;
@@ -58,7 +59,8 @@ interface Runtime {
   loaded: boolean;
   sessionId: string | null;
   sessionFile: string | null;
-  liveEntries: LiveEntry[];
+  /** FR-4：临时会话的待落盘队列（`session_start` 时清空，`session_shutdown` 时写账本）。 */
+  ephemeralEntries: EphemeralUsageEntry[];
   budgetState: BudgetState | null;
   browserOpened: boolean;
 }
@@ -106,7 +108,7 @@ function createRuntime(): Runtime {
     loaded: false,
     sessionId: null,
     sessionFile: null,
-    liveEntries: [],
+    ephemeralEntries: [],
     budgetState: null,
     browserOpened: false,
   };
@@ -159,10 +161,8 @@ export default function piMonitorExtension(pi: ExtensionAPI): void {
       runtime.sessionId = ctx.sessionManager.getSessionId();
       runtime.sessionFile = ctx.sessionManager.getSessionFile() ?? null;
       runtime.context.sessionId = runtime.sessionId;
-      runtime.liveEntries = [];
+      runtime.ephemeralEntries = [];
       runtime.browserOpened = false;
-      // FR-4.3：`session_start`（含 new/resume/fork）时重置实时计数。
-      runtime.engine.resetLive(runtime.sessionId ?? undefined);
       const today = dayKey(Date.now(), runtime.engine.timezone);
       runtime.budgetState = readBudgetState(runtime.engine.paths.budgetState, today, today.slice(0, 7));
     } catch (error) {
@@ -170,7 +170,13 @@ export default function piMonitorExtension(pi: ExtensionAPI): void {
     }
   });
 
-  // FR-4.1：实时采集（不写账本，避免与扫描重复计数）。
+  /**
+   * FR-4：只为临时会话（无会话文件）收集待落盘的条目。
+   *
+   * 不再维护「本会话（实时）」内存计数器：同一进程里可能有多个会话，
+   * 且仪表盘进程未必就是产生用量的那个进程，内存计数器无法可靠地代表「本会话」；
+   * 当天用量由账本 + 仪表盘自动刷新（≤30 s）呈现（FR-8.7）。
+   */
   pi.on("message_end", async (event, ctx) => {
     try {
       const message = event.message as unknown as Record<string, unknown>;
@@ -178,6 +184,8 @@ export default function piMonitorExtension(pi: ExtensionAPI): void {
       if (role !== "assistant" && role !== "toolResult") return;
       const usage = message["usage"];
       if (usage === undefined || usage === null) return;
+      // 有会话文件的会话由扫描器落账（FR-2），这里只为无文件的临时会话留底。
+      if (runtime.sessionFile !== null && runtime.sessionFile.length > 0) return;
 
       const provider =
         typeof message["provider"] === "string" ? (message["provider"] as string) : (ctx.model?.provider ?? null);
@@ -186,16 +194,7 @@ export default function piMonitorExtension(pi: ExtensionAPI): void {
       const toolName = typeof message["toolName"] === "string" ? (message["toolName"] as string) : null;
       const ts = typeof message["timestamp"] === "number" ? (message["timestamp"] as number) : Date.now();
 
-      runtime.engine.recordLiveUsage({
-        kind,
-        toolName,
-        usage,
-        provider,
-        model: modelId,
-        sessionId: runtime.sessionId ?? "",
-        timestamp: ts,
-      });
-      runtime.liveEntries.push({ kind, toolName, usage, provider, model: modelId, ts });
+      runtime.ephemeralEntries.push({ kind, toolName, usage, provider, model: modelId, ts });
     } catch (error) {
       surfaceError(ctx, error);
     }
@@ -212,7 +211,7 @@ export default function piMonitorExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, _ctx) => {
     try {
-      // FR-4.5：临时会话结束后按配置落盘。
+      // FR-4：临时会话结束后按配置落盘。
       captureEphemeral(runtime);
       // FR-6.10：按 `dashboard.stopOnExit` 关闭服务。
       if (runtime.server !== null && runtime.loadedConfig.config.dashboard.stopOnExit) {
@@ -484,20 +483,20 @@ function windowTotals(runtime: Runtime, fromMs: number, toMs: number): Totals {
   return sumTotals(records, runtime.engine.config.currency.rate);
 }
 
-/** FR-4.5：临时会话（无文件）结束时按配置落盘并标记 `ephemeral:true`。 */
+/** FR-4：临时会话（无文件）结束时按配置落盘并标记 `ephemeral:true`。 */
 function captureEphemeral(runtime: Runtime): void {
   const config = runtime.engine.config;
   if (!config.ephemeralCapture) return;
   if (runtime.sessionFile !== null && runtime.sessionFile.length > 0) return;
-  if (runtime.liveEntries.length === 0) return;
+  if (runtime.ephemeralEntries.length === 0) return;
 
   const tz = runtime.engine.timezone;
   const sessionId = runtime.sessionId ?? "ephemeral";
   const emptyPricing = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
   const records: UsageRecord[] = [];
 
-  for (let index = 0; index < runtime.liveEntries.length; index += 1) {
-    const entry = runtime.liveEntries[index] as LiveEntry;
+  for (let index = 0; index < runtime.ephemeralEntries.length; index += 1) {
+    const entry = runtime.ephemeralEntries[index] as EphemeralUsageEntry;
     const components = readUsageComponents(entry.usage, entry.provider, entry.model, emptyPricing);
     if (components === null) continue;
     records.push({

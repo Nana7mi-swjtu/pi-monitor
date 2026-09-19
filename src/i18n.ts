@@ -76,8 +76,6 @@ const EN: Dict = {
   "card.messages": "Messages",
   "card.activeDays": "Active days",
   "card.sessions": "Sessions",
-  "card.live": "This session (live)",
-  "card.liveNote": "live (may not be persisted yet)",
   "card.vsPrev": "vs previous",
   "card.noPrev": "—",
 
@@ -298,8 +296,6 @@ const ZH: Dict = {
   "card.messages": "消息数",
   "card.activeDays": "活跃天数",
   "card.sessions": "会话数",
-  "card.live": "本会话（实时）",
-  "card.liveNote": "实时（可能尚未落盘）",
   "card.vsPrev": "环比",
   "card.noPrev": "—",
 

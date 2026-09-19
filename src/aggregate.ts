@@ -274,7 +274,6 @@ export interface AggregateOptions {
   withGroups?: boolean;
   metric?: Metric;
   limit?: number;
-  live?: Totals;
   health?: MetaInfo;
   comparison?: { totals: Totals; hasData: boolean };
   labelFor: (window: WindowSpec) => string;
@@ -346,7 +345,6 @@ export function buildAggregate(options: AggregateOptions): AggregateOutcome {
     result.buckets = computeBuckets(daily, options.metric ?? "tokens");
   }
 
-  if (options.live !== undefined) result.live = options.live;
   if (options.health !== undefined) result.health = options.health;
   if (options.comparison !== undefined) result.comparison = options.comparison;
   if (truncated) result.truncated = true;
@@ -363,34 +361,4 @@ export function buildComparison(
 ): { totals: Totals; hasData: boolean } {
   const inWindow = applyFilters(filterByWindow(records, previous), filters);
   return { totals: sumTotals(inWindow, rate), hasData: inWindow.length > 0 };
-}
-
-/** 供 dashboard 的「本会话」卡片合并实时计数（FR-4）。 */
-export function addTotals(a: Totals, b: Totals): Totals {
-  return {
-    tokens: {
-      input: a.tokens.input + b.tokens.input,
-      output: a.tokens.output + b.tokens.output,
-      cacheRead: a.tokens.cacheRead + b.tokens.cacheRead,
-      cacheWrite: a.tokens.cacheWrite + b.tokens.cacheWrite,
-      billed: a.tokens.billed + b.tokens.billed,
-    },
-    messages: {
-      assistant: a.messages.assistant + b.messages.assistant,
-      toolResult: a.messages.toolResult + b.messages.toolResult,
-      total: a.messages.total + b.messages.total,
-    },
-    cost: {
-      usd: {
-        known: addUsd(a.cost.usd.known, b.cost.usd.known),
-        estimated: addUsd(a.cost.usd.estimated, b.cost.usd.estimated),
-      },
-      cny: {
-        known: addUsd(a.cost.cny.known, b.cost.cny.known),
-        estimated: addUsd(a.cost.cny.estimated, b.cost.cny.estimated),
-      },
-    },
-    sessions: Math.max(a.sessions, b.sessions),
-    activeDays: Math.max(a.activeDays, b.activeDays),
-  };
 }

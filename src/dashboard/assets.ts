@@ -610,7 +610,6 @@ function renderCards() {
   const totals = summary.totals;
   const prev = summary.comparison ? summary.comparison.totals : null;
   const hasPrev = !!(summary.comparison && summary.comparison.hasData);
-  const live = summary.live;
   const html = [];
   html.push(card(t("card.billed"), fmtCount(totals.tokens.billed), deltaText(totals.tokens.billed, prev ? prev.tokens.billed : null, hasPrev)));
   html.push(card(t("card.input"), fmtCount(totals.tokens.input)));
@@ -622,9 +621,6 @@ function renderCards() {
   html.push(card(t("card.messages"), fmtInt(totals.messages.total)));
   html.push(card(t("card.activeDays"), fmtInt(totals.activeDays)));
   html.push(card(t("card.sessions"), fmtInt(totals.sessions)));
-  if (live) {
-    html.push(card(t("card.live"), fmtCount(live.tokens.billed), t("card.liveNote") + " \u00b7 " + fmtCNY(live.cost.cny.known)));
-  }
   node.innerHTML = html.join("");
 }
 function renderHeatmap() {

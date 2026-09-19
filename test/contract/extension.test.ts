@@ -22,11 +22,6 @@ interface RuntimeHandle {
     meta: { revision: number };
     paths: { ledger: string };
     config: { currency: { rate: number; rateSource: string; autoRate: boolean; rateFetchedAt: string | null } };
-    getLiveTotals: (rate: number) => {
-      tokens: { billed: number };
-      messages: { total: number };
-      cost: { usd: { known: number | null } };
-    };
   };
   /** ¥8：由接口注入的汇率请求实现（测试用）。 */
   context: { rateFetcher?: typeof fetch };
@@ -357,14 +352,18 @@ test("AC-15.4：一次会话内调用 3 次 → 消息条数 ≤ 3 且每条 ≤
   }
 });
 
-test("FR-4：session_start / message_end 驱动「本会话（实时）」计数（AC-4.1/AC-4.2）", async () => {
+test("FR-4：临时会话（无会话文件）在 session_shutdown 时落盘并标记 ephemeral", async () => {
   const scenario = await boot();
   try {
-    const { ctx } = makeMockContext({ hasUI: true, mode: "rpc", sessionId: "sess-live", sessionFile: "C:\\x.jsonl" });
-    await scenario.mock.events.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-
     const messageEnd = scenario.mock.events.get("message_end")?.[0];
-    assert.ok(messageEnd);
+    const sessionStart = scenario.mock.events.get("session_start")?.[0];
+    const shutdown = scenario.mock.events.get("session_shutdown")?.[0];
+    assert.ok(messageEnd && sessionStart && shutdown);
+    const ledgerPath = path.join(scenario.agentDir, "pi-monitor", "ledger.jsonl");
+
+    // 有会话文件的会话：用量由扫描器落账（FR-2），message_end 不得产生任何待落盘条目。
+    const fileCtx = makeMockContext({ hasUI: true, mode: "rpc", sessionId: "sess-file", sessionFile: "C:\\x.jsonl" }).ctx;
+    await sessionStart({ reason: "startup" }, fileCtx);
     await messageEnd(
       {
         message: {
@@ -375,31 +374,73 @@ test("FR-4：session_start / message_end 驱动「本会话（实时）」计数
           usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 5, totalTokens: 150, cost: { total: 0.001 } },
         },
       },
-      ctx,
+      fileCtx,
+    );
+    await shutdown({ reason: "exit" }, fileCtx);
+    assert.equal(fs.existsSync(ledgerPath), false, "有会话文件的会话不得写 ephemeral 记录");
+
+    // 临时会话（--no-session）：收集 assistant / toolResult，忽略 user。
+    const tempCtx = makeMockContext({ hasUI: true, mode: "rpc", sessionId: "sess-temp", sessionFile: null }).ctx;
+    await sessionStart({ reason: "startup" }, tempCtx);
+    await messageEnd(
+      {
+        message: {
+          role: "assistant",
+          provider: "acme",
+          model: "acme-1",
+          timestamp: Date.parse("2026-09-19T10:05:00.000Z"),
+          usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 5, totalTokens: 150, cost: { total: 0.001 } },
+        },
+      },
+      tempCtx,
     );
     await messageEnd(
       {
         message: {
           role: "toolResult",
           toolName: "read",
-          timestamp: Date.parse("2026-09-19T10:00:01.000Z"),
+          timestamp: Date.parse("2026-09-19T10:05:01.000Z"),
           usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.0005 } },
         },
       },
-      ctx,
+      tempCtx,
     );
-    // user 消息不得计数。
-    await messageEnd({ message: { role: "user", content: "hi" } }, ctx);
+    await messageEnd({ message: { role: "user", content: "hi" } }, tempCtx);
+    // 无 usage 的消息不得产生条目。
+    await messageEnd({ message: { role: "assistant", provider: "acme", model: "acme-1" } }, tempCtx);
+    await shutdown({ reason: "exit" }, tempCtx);
 
-    const live = scenario.runtime.engine.getLiveTotals(7.2);
-    assert.equal(live.tokens.billed, 165);
-    assert.equal(live.messages.total, 2);
-    assert.equal(live.cost.usd.known, 0.0015);
+    const lines = fs
+      .readFileSync(ledgerPath, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(lines.length, 2, "只应落盘 assistant + toolResult 两条");
+    assert.equal(lines.reduce((sum, record) => sum + (record["billed"] as number), 0), 165);
+    for (const record of lines) {
+      assert.equal(record["ephemeral"], true);
+      assert.equal(record["sessionFile"], "(ephemeral)");
+      assert.equal(record["sessionId"], "sess-temp");
+    }
+    assert.equal(lines[0]?.["kind"], "assistant");
+    assert.equal(lines[1]?.["kind"], "toolResult");
+    assert.equal(lines[1]?.["toolName"], "read");
+  } finally {
+    scenario.dispose();
+  }
+});
 
-    // AC-4.2：/new（session_start）后归零。
-    await scenario.mock.events.get("session_start")?.[0]?.({ reason: "new" }, ctx);
-    const afterReset = scenario.runtime.engine.getLiveTotals(7.2);
-    assert.equal(afterReset.tokens.billed, 0);
+test("FR-4：/api/summary 不再返回 live（内存实时计数器已删除）", async () => {
+  const scenario = await boot();
+  try {
+    const { ctx } = makeMockContext({ hasUI: true, mode: "rpc" });
+    await scenario.mock.commands.get("tokens")?.handler("--no-open", ctx);
+    const url = scenario.runtime.server?.info?.url;
+    assert.ok(url, "服务必须已启动");
+    const body = (await (await fetch(`${url.split("/?")[0]}/api/summary?window=all&t=${scenario.runtime.server?.info?.token}`)).json()) as Record<string, unknown>;
+    assert.equal("live" in body, false, "FR-4.1~4.4 已删除：响应不得再有 live 字段");
+    assert.ok(body["totals"], "totals 仍必须存在");
+    await scenario.runtime.server?.stop();
   } finally {
     scenario.dispose();
   }

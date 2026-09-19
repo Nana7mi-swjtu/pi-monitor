@@ -148,7 +148,7 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
     assert.equal(summary["totals"]["tokens"]["billed"], 1170, "1150 + 20");
     assert.equal(summary["window"]["tz"], "UTC");
     assert.equal(summary["totals"]["cost"]["cny"]["known"], 0.00049, "M-2：0.000068 × 7.2 = 0.0004896 → 0.00049");
-    assert.ok(summary["live"], "summary 必须带 live（FR-4 本会话卡片）");
+    assert.equal("live" in summary, false, "FR-4 已删除：summary 不得再带 live");
     assert.ok(summary["health"], "summary 必须带 health");
     assert.ok(summary["comparison"], "8.3 环比");
 

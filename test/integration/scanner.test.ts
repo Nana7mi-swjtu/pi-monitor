@@ -368,44 +368,15 @@ test("AC-12.3 / FR-12.4：重建前后总量一致（去重与口径回归）", 
   }
 });
 
-test("AC-4.1~AC-4.3：实时计数器与临时会话落盘", async () => {
+test("FR-4：临时会话记录落盘并标记 ephemeral（不写重复账本）", async () => {
   const agentDir = makeTempAgentDir();
   try {
     sessionDir(agentDir);
     const engine = makeEngine(agentDir);
 
-    engine.resetLive("sess-live");
-    engine.recordLiveUsage({
-      kind: "assistant",
-      usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 10, totalTokens: 150, cost: { total: 0.001 } },
-      provider: "acme",
-      model: "acme-1",
-      sessionId: "sess-live",
-      timestamp: 1789812001000,
-    });
-    engine.recordLiveUsage({
-      kind: "toolResult",
-      toolName: "read",
-      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.0005 } },
-      provider: "acme",
-      model: "acme-1",
-      sessionId: "sess-live",
-    });
+    // 实时内存计数器已删除（FR-4.1~4.4）：用量一律经由账本呈现，内存里不得出现记录。
+    assert.equal(engine.records.length, 0);
 
-    const live = engine.getLiveTotals(7.2);
-    assert.equal(live.tokens.billed, 165);
-    assert.equal(live.messages.assistant, 1);
-    assert.equal(live.messages.toolResult, 1);
-    assert.equal(live.cost.usd.known, 0.0015);
-    assert.equal(live.cost.cny.known, 0.0108, "实时金额同样按当前汇率换算（¥5）");
-    assert.equal(engine.records.length, 0, "FR-4.4：实时计数不写账本");
-
-    // FR-4.2：/new 后归零。
-    engine.resetLive("sess-other");
-    assert.equal(engine.getLiveTotals(7.2).tokens.billed, 0);
-    assert.equal(engine.getLiveTotals(7.2).messages.total, 0);
-
-    // FR-4.5：临时会话记录落盘并标记 ephemeral。
     const written = engine.persistEphemeral([
       {
         v: 1,
@@ -439,6 +410,10 @@ test("AC-4.1~AC-4.3：实时计数器与临时会话落盘", async () => {
     assert.equal(written, 1);
     assert.equal(engine.records.length, 1);
     assert.equal(engine.records[0]?.ephemeral, true);
+
+    // 幂等：同一条再次落盘不新增（去重口径不变）。
+    assert.equal(engine.persistEphemeral(engine.records), 0);
+    assert.equal(engine.records.length, 1);
   } finally {
     cleanup(agentDir);
   }

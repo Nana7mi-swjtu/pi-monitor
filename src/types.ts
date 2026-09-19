@@ -269,7 +269,6 @@ export interface AggregateResult {
   buckets?: Buckets;
   /** 8.4 热力图网格区间（仅 `/api/daily` 填充，导出与工具不带）。 */
   grid?: HeatmapGrid;
-  live?: Totals;
   health?: MetaInfo;
   comparison?: { totals: Totals; hasData: boolean };
   truncated?: boolean;

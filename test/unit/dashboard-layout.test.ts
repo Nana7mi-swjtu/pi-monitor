@@ -266,10 +266,21 @@ test("AC-8.10：标签字号 ≥ 11px 且水平排列（不再使用 9px 竖排�
   assert.match(appJs, /node\.style\.gap = layout\.gap/);
 });
 
+test("FR-4：页面不存在「本会话（实时）」卡片（内存实时计数器已删除）", () => {
+  const appJs = /const APP_JS = String\.raw`([\s\S]*?)`;/.exec(assetsSource)?.[1] as string;
+  assert.equal(appJs.includes("summary.live"), false, "前端不得再读 summary.live");
+  assert.equal(appJs.includes("card.live"), false, "前端不得再渲染实时卡片");
+  assert.equal(page.includes('id="card-live"'), false);
+  // 字典里的键必须一并删除（否则是死键）。
+  for (const key of ["card.live", "card.liveNote"]) {
+    assert.equal(key in dictionaries["zh-CN"], false, `${key} 应为死键并已删除`);
+    assert.equal(key in dictionaries["en-US"], false, `${key} 应为死键并已删除`);
+  }
+});
+
 /* --------------------------------------------------- AC-8.2 指标固定 tokens */
 
-test("AC-8.2：页面不存在指标切换控件，图表数值固定取 tokens.billed", () => {
-  assert.equal(page.includes('id="metric"'), false, "模板不得再包含指标下拉");
+test("AC-8.2：页面不存在指标切换控件，图表数值固定取 tokens.billed", () => {  assert.equal(page.includes('id="metric"'), false, "模板不得再包含指标下拉");
   assert.equal(page.includes("metric.tokens"), false);
   const appJs = /const APP_JS = String\.raw`([\s\S]*?)`;/.exec(assetsSource)?.[1] as string;
   assert.equal(appJs.includes("state.metric"), false, "前端不得再持有指标状态");

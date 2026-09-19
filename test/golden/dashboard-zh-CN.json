@@ -14,7 +14,6 @@
   "card.messages": "消息数",
   "card.activeDays": "活跃天数",
   "card.sessions": "会话数",
-  "card.live": "本会话（实时）",
   "col.name": "名称",
   "col.billed": "计费 Token",
   "col.input": "输入",

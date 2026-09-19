@@ -182,6 +182,12 @@ await check("AC-8.9 / AC-8.2 图表几何与指标控件", () => {
   // D-3：不再有任何指标切换控件。
   if (/id="metric"/.test(assets)) return "页面不得包含指标切换控件";
   if (/state\.metric/.test(assets)) return "前端不得持有指标状态";
+  // FR-4：内存实时计数器已删除（跨进程/跨会话不可靠）；不得以任何形式回归。
+  if (/card\.live|summary\.live/.test(assets)) return "页面不得再渲染「本会话（实时）」卡片";
+  const engine = fs.readFileSync(path.join(root, "src", "scanner.ts"), "utf8");
+  if (/recordLiveUsage|getLiveTotals|resetLive/.test(engine)) return "引擎不得再持有内存实时计数器";
+  const types = fs.readFileSync(path.join(root, "src", "types.ts"), "utf8");
+  if (/^\s+live\?:/m.test(types)) return "7.5 已删除 live 字段，不得回归";
   return true;
 });
 

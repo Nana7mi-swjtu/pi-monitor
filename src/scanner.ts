@@ -9,7 +9,6 @@
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { emptyTotals } from "./aggregate.ts";
 import { dedupeRecords, type DedupeResult } from "./dedupe.ts";
 import { discoverSessionFiles } from "./discover.ts";
 import { createLogger } from "./health.ts";
@@ -30,8 +29,7 @@ import {
   writeMeta,
   type DataPaths,
 } from "./ledger.ts";
-import { round6 } from "./money.ts";
-import { SessionParser, readUsageComponents, type ParsedSession, type SessionHeaderInfo } from "./parser.ts";
+import { SessionParser, type ParsedSession, type SessionHeaderInfo } from "./parser.ts";
 import { normalizePath, normalizeProject, pathKey, resolveDataDir, resolveSessionRoots } from "./paths.ts";
 import { loadPricingTable, emptyPricingTable, type PricingTable } from "./pricing.ts";
 import { dayKey, resolveTimezone, type ResolvedTimezone } from "./time.ts";
@@ -42,11 +40,8 @@ import {
   type DedupeSkip,
   type Logger,
   type MetaInfo,
-  type MoneyTotals,
   type PiMonitorConfig,
-  type RecordKind,
   type SessionSource,
-  type Totals,
   type UsageRecord,
 } from "./types.ts";
 
@@ -106,27 +101,11 @@ export interface EngineOptions {
   pricing?: PricingTable;
 }
 
-/** 实时计数器（FR-4）：只保留 USD 口径，人民币在读取时按当前汇率换算（¥5）。 */
-interface LiveCounters {
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; billed: number };
-  messages: { assistant: number; toolResult: number; total: number };
-  usd: MoneyTotals;
-  sessions: Set<string>;
-  lastEntryAt: number | null;
-}
-
-function emptyLive(): LiveCounters {
-  return {
-    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, billed: 0 },
-    messages: { assistant: 0, toolResult: 0, total: 0 },
-    usd: { known: null, estimated: null },
-    sessions: new Set<string>(),
-    lastEntryAt: null,
-  };
-}
+/** 实时计数器（FR-4）已删除：内存计数器无法跨进程/跨会话可靠地代表「本会话」，
+ *  `message_end` 现在只为临时会话落盘（FR-4）收集条目，见 extensions/pi-monitor/index.ts。 */
 
 /**
- * 索引引擎（FR-2 增量、FR-3 去重、FR-4 实时、FR-12 存储）。
+ * 索引引擎（FR-2 增量、FR-3 去重、FR-4 临时会话落盘、FR-12 存储）。
  * 所有 IO/解析错误都被降级处理，绝不抛到 agent 主流程（NFR-5）。
  */
 export class MonitorEngine {
@@ -149,7 +128,6 @@ export class MonitorEngine {
   private readonly env: NodeJS.ProcessEnv;
   private tzInfo: ResolvedTimezone;
   private readonly fileMeta = new Map<string, FileMetaCache>();
-  private live: LiveCounters = emptyLive();
   private scanInFlight: Promise<ScanSummary> | null = null;
   /** 内存中的 `records` 是否可信（已 load 或已完整扫描过）。用于 NFR-2 热启动短路。 */
   private recordsLoaded = false;
@@ -245,58 +223,8 @@ export class MonitorEngine {
     return resolveSessionRoots(this.agentDir, this.config.extraSessionDirs, this.env);
   }
 
-  /** FR-4：实时（可能尚未落盘）的「本会话」合计。 */
-  getLiveTotals(rate: number): Totals {
-    const totals = emptyTotals();
-    totals.tokens = { ...this.live.tokens };
-    totals.messages = { ...this.live.messages };
-    totals.cost.usd = { ...this.live.usd };
-    totals.cost.cny = {
-      known: this.live.usd.known === null ? null : round6(this.live.usd.known * rate),
-      estimated: this.live.usd.estimated === null ? null : round6(this.live.usd.estimated * rate),
-    };
-    totals.sessions = this.live.sessions.size;
-    totals.activeDays = this.live.lastEntryAt === null ? 0 : 1;
-    return totals;
-  }
-
-  /** FR-4.3：`session_start` 时重置（含 new/resume/fork）。 */
-  resetLive(sessionId?: string): void {
-    this.live = emptyLive();
-    if (sessionId !== undefined && sessionId.length > 0) this.live.sessions.add(sessionId);
-  }
-
   /**
-   * FR-4.1：`message_end` 中 assistant / toolResult 且含 `usage` 的累加。
-   * 4.2/4.3：`reasoning` 已包含在 `output` 中，不重复累加。
-   */
-  recordLiveUsage(input: {
-    kind: RecordKind;
-    toolName?: string | null;
-    usage: unknown;
-    provider: string | null;
-    model: string | null;
-    sessionId: string;
-    timestamp?: number;
-  }): void {
-    const components = readUsageComponents(input.usage, input.provider, input.model, this.pricing);
-    if (components === null) return;
-    this.live.tokens.input += components.input;
-    this.live.tokens.output += components.output;
-    this.live.tokens.cacheRead += components.cacheRead;
-    this.live.tokens.cacheWrite += components.cacheWrite;
-    this.live.tokens.billed += components.billed;
-    if (input.kind === "assistant") this.live.messages.assistant += 1;
-    if (input.kind === "toolResult") this.live.messages.toolResult += 1;
-    this.live.messages.total += 1;
-    if (components.costUsd !== null) this.live.usd.known = (this.live.usd.known ?? 0) + components.costUsd;
-    if (components.costUsdEst !== null) this.live.usd.estimated = (this.live.usd.estimated ?? 0) + components.costUsdEst;
-    this.live.sessions.add(input.sessionId);
-    this.live.lastEntryAt = input.timestamp ?? Date.now();
-  }
-
-  /**
-   * FR-4.5 / 13 章：临时会话结束后把内存记录写入账本并标记 `ephemeral: true`。
+   * FR-4 / 13 章：临时会话结束后把内存记录写入账本并标记 `ephemeral: true`。
    * 返回实际写入的条数。
    */
   persistEphemeral(records: readonly UsageRecord[]): number {
