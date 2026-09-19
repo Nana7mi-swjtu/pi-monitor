@@ -1,0 +1,43 @@
+{
+  "name": "pi-monitor",
+  "version": "1.1.0",
+  "description": "pi usage ledger and local browser dashboard (tokens, CNY cost, heatmap). Zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tokens",
+    "usage",
+    "cost"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-monitor/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^22.20.4",
+    "typebox": "^1.3.7",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/unit/*.test.ts\" \"test/integration/*.test.ts\" \"test/contract/*.test.ts\"",
+    "bench": "node --expose-gc --test test/bench/engine.bench.mjs",
+    "fixtures": "node test/fixtures/write-fixtures.mjs",
+    "gate": "node tools/quality-gate.mjs",
+    "check": "npm run gate && npm run typecheck && npm run test"
+  }
+}

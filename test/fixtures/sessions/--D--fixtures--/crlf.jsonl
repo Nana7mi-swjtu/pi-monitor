@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-crlf","timestamp":"2026-09-19T17:00:00.000Z","cwd":"D:\\fixtures\\proj-crlf"}
+{"type":"message","id":"r0000001","parentId":null,"timestamp":"2026-09-19T17:00:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":12,"output":34,"cacheRead":56,"cacheWrite":78,"reasoning":0,"totalTokens":180,"cost":{"input":1.8,"output":0,"cacheRead":0,"cacheWrite":0,"total":1.8}},"stopReason":"stop","timestamp":1789837201000}}

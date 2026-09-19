@@ -1,0 +1,14 @@
+# 依赖（仅 devDependencies 用于类型检查；运行时零依赖，可不安装）
+node_modules/
+npm-debug.log*
+
+# 索引备份与运行期数据
+*.bak-*
+.pi-monitor-tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

@@ -1,0 +1,2 @@
+﻿{"type":"session","version":3,"id":"sess-bom","timestamp":"2026-09-19T16:30:00.000Z","cwd":"D:\\fixtures\\proj-bom"}
+{"type":"message","id":"m0000001","parentId":null,"timestamp":"2026-09-19T16:30:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":11,"output":22,"cacheRead":33,"cacheWrite":44,"reasoning":0,"totalTokens":110,"cost":{"input":1.1,"output":0,"cacheRead":0,"cacheWrite":0,"total":1.1}},"stopReason":"stop","timestamp":1789835401000}}

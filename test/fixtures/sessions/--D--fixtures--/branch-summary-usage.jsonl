@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-branch","timestamp":"2026-09-19T14:00:00.000Z","cwd":"D:\\fixtures\\proj-branch"}
+{"type":"branch_summary","id":"b0000001","parentId":null,"timestamp":"2026-09-19T14:00:01.000Z","fromId":"x","summary":"branch","usage":{"input":300,"output":200,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":500,"cost":{"input":0.000045,"output":0.00012,"cacheRead":0,"cacheWrite":0,"total":0.000165}}}

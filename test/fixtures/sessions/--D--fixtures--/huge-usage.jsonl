@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-huge","timestamp":"2026-09-19T21:00:00.000Z","cwd":"D:\\fixtures\\proj-huge"}
+{"type":"message","id":"q0000001","parentId":null,"timestamp":"2026-09-19T21:00:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":1000000000000000,"output":1000000000000000,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2000000000000000,"cost":{"input":0.75,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.75}},"stopReason":"stop","timestamp":1789851601000}}

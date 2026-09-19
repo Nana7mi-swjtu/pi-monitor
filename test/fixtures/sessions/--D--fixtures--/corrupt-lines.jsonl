@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"sess-corrupt","timestamp":"2026-09-19T16:00:00.000Z","cwd":"D:\\fixtures\\proj-corrupt"}
+not json at all
+[1,2,3]
+{"nope":true}
+{"type":"message","id":"k0000001","parentId":null,"timestamp":"2026-09-19T16:00:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4,"reasoning":0,"totalTokens":10,"cost":{"input":1,"output":0,"cacheRead":0,"cacheWrite":0,"total":1}},"stopReason":"stop","timestamp":1789833601000}}

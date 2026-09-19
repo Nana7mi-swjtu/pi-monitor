@@ -1,0 +1,12 @@
+# 统一换行符，保证跨平台检出结果一致
+* text=auto eol=lf
+
+# 会话 fixture 必须字节精确：
+#   crlf.jsonl 依赖 CRLF、no-trailing-newline.jsonl 依赖缺少末尾换行、bom.jsonl 依赖 BOM。
+# AC-1.3 会直接断言这些字节细节，因此禁止 Git 做任何换行/编码转换。
+test/fixtures/sessions/** -text
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary

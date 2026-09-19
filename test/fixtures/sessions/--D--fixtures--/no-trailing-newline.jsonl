@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-notrail","timestamp":"2026-09-19T17:30:00.000Z","cwd":"D:\\fixtures\\proj-notrail"}
+{"type":"message","id":"t0000001","parentId":null,"timestamp":"2026-09-19T17:30:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":13,"output":35,"cacheRead":57,"cacheWrite":79,"reasoning":0,"totalTokens":184,"cost":{"input":1.84,"output":0,"cacheRead":0,"cacheWrite":0,"total":1.84}},"stopReason":"stop","timestamp":1789839001000}}

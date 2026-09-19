@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"sess-badusage","timestamp":"2026-09-19T23:50:00.000Z","cwd":"D:\\fixtures\\proj-badusage"}
+{"type":"message","id":"e0000001","parentId":null,"timestamp":"2026-09-19T23:50:01.000Z","message":{"role":"assistant","provider":"acme","model":"acme-1","usage":"not-an-object","stopReason":"stop","timestamp":1789861801000}}
+{"type":"message","id":"e0000002","parentId":"e0000001","timestamp":"2026-09-19T23:50:02.000Z","message":{"role":"assistant","provider":"acme","model":"acme-1","usage":{"input":"abc","output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"total":0.001}},"stopReason":"stop","timestamp":1789861802000}}

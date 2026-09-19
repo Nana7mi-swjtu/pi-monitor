@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local/pi-monitor/export-schema.json",
+  "title": "pi-monitor 导出 JSON（7.5 AggregateResult）",
+  "type": "object",
+  "required": ["schemaVersion", "generatedAt", "currency", "window", "filters", "totals"],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "currency": {
+      "type": "object",
+      "required": ["code", "symbol", "rate", "rateSource"],
+      "properties": {
+        "code": { "const": "CNY" },
+        "symbol": { "const": "¥" },
+        "rate": { "type": "number", "minimum": 0.01, "maximum": 100 },
+        "rateSource": { "const": "manual" }
+      }
+    },
+    "window": {
+      "type": "object",
+      "required": ["from", "to", "tz", "label", "days"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "tz": { "type": "string" },
+        "label": { "type": "string" },
+        "days": { "type": "number" },
+        "swapped": { "type": "boolean" }
+      }
+    },
+    "filters": { "type": "object" },
+    "totals": { "$ref": "#/definitions/totals" },
+    "groups": { "type": "array", "items": { "$ref": "#/definitions/group" } },
+    "daily": { "type": "array", "items": { "$ref": "#/definitions/daily" } },
+    "buckets": {
+      "type": "object",
+      "required": ["metric", "p50", "p75", "p90", "legend"],
+      "properties": {
+        "metric": { "type": "string", "enum": ["tokens", "cost", "messages"] },
+        "p50": { "type": "number" },
+        "p75": { "type": "number" },
+        "p90": { "type": "number" },
+        "legend": { "type": "array", "items": { "type": "string" }, "minItems": 5 }
+      }
+    },
+    "live": { "$ref": "#/definitions/totals" },
+    "health": { "type": "object" },
+    "truncated": { "type": "boolean" }
+  },
+  "definitions": {
+    "moneyTotals": {
+      "type": "object",
+      "required": ["known", "estimated"],
+      "properties": {
+        "known": { "type": ["number", "null"] },
+        "estimated": { "type": ["number", "null"] }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["tokens", "messages", "cost", "sessions", "activeDays"],
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "required": ["input", "output", "cacheRead", "cacheWrite", "billed"],
+          "properties": {
+            "input": { "type": "number" },
+            "output": { "type": "number" },
+            "cacheRead": { "type": "number" },
+            "cacheWrite": { "type": "number" },
+            "billed": { "type": "number" }
+          }
+        },
+        "messages": {
+          "type": "object",
+          "required": ["assistant", "toolResult", "total"],
+          "properties": {
+            "assistant": { "type": "number" },
+            "toolResult": { "type": "number" },
+            "total": { "type": "number" }
+          }
+        },
+        "cost": {
+          "type": "object",
+          "required": ["usd", "cny"],
+          "properties": {
+            "usd": { "$ref": "#/definitions/moneyTotals" },
+            "cny": { "$ref": "#/definitions/moneyTotals" }
+          }
+        },
+        "sessions": { "type": "number" },
+        "activeDays": { "type": "number" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["key", "label", "totals", "share"],
+      "properties": {
+        "key": { "type": "string" },
+        "label": { "type": "string" },
+        "totals": { "$ref": "#/definitions/totals" },
+        "share": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "daily": {
+      "type": "object",
+      "required": ["day", "totals"],
+      "properties": {
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "totals": { "$ref": "#/definitions/totals" }
+      }
+    }
+  }
+}

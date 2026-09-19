@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-inconsistent","timestamp":"2026-09-19T23:30:00.000Z","cwd":"D:\\fixtures\\proj-inconsistent"}
+{"type":"message","id":"y0000001","parentId":null,"timestamp":"2026-09-19T23:30:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":100,"output":100,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":999,"cost":{"input":0.000075,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.000075}},"stopReason":"stop","timestamp":1789860601000}}

@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-cache","timestamp":"2026-09-19T11:00:00.000Z","cwd":"D:\\fixtures\\proj-cache"}
+{"type":"message","id":"c0000001","parentId":null,"timestamp":"2026-09-19T11:00:00.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":10,"output":10,"cacheRead":500000,"cacheWrite":200000,"reasoning":5,"totalTokens":700020,"cost":{"input":0.02,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.02}},"stopReason":"stop","timestamp":1789815600000}}

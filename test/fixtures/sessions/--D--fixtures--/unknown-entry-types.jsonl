@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"sess-unknown","timestamp":"2026-09-19T18:00:00.000Z","cwd":"D:\\fixtures\\proj-unknown"}
+{"type":"future_thing","id":"u0000000","parentId":null,"timestamp":"2026-09-19T18:00:00.500Z","payload":{"x":1}}
+{"type":"model_change","id":"u0000001","parentId":null,"timestamp":"2026-09-19T18:00:00.600Z","provider":"acme","modelId":"acme-1"}
+{"type":"message","id":"u0000002","parentId":"u0000001","timestamp":"2026-09-19T18:00:01.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-1","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6,"reasoning":0,"totalTokens":30,"cost":{"input":0.3,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.3}},"stopReason":"stop","timestamp":1789840801000}}

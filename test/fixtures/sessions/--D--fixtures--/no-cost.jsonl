@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-nocost","timestamp":"2026-09-19T12:00:00.000Z","cwd":"D:\\fixtures\\proj-nocost"}
+{"type":"message","id":"z0000001","parentId":null,"timestamp":"2026-09-19T12:00:00.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":"acme-unpriced","usage":{"input":1000,"output":1000,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2000},"stopReason":"stop","timestamp":1789819200000}}
