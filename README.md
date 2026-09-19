@@ -22,20 +22,21 @@
 
 ## 安装
 
+把下面的 `<本仓库路径>` 换成本仓库在你机器上的实际目录（例如克隆后的目录）。
+
 ```powershell
 # 方式一：pi CLI（写入 ~/.pi/agent/settings.json 的 packages）
-pi install D:/PI/pi-monitor
+pi install <本仓库路径>
 
 # 方式二：pi-web「插件」面板 → 添加包 → 本地路径
-#   D:\PI\pi-monitor
 
 # 方式三：临时试用，不改配置
-pi --no-extensions -e D:/PI/pi-monitor/extensions/pi-monitor/index.ts
+pi --no-extensions -e <本仓库路径>/extensions/pi-monitor/index.ts
 ```
 
 安装后**重启 pi-web 进程或重开会话**（扩展在会话创建时加载）。
 
-卸载：`pi remove D:/PI/pi-monitor`。数据目录不会自动删除，手动删除 `~/.pi/agent/pi-monitor/` 即可清空统计。
+卸载：`pi remove <本仓库路径>`。数据目录不会自动删除，手动删除 `~/.pi/agent/pi-monitor/` 即可清空统计。
 
 ## 使用
 
@@ -54,10 +55,10 @@ pi --no-extensions -e D:/PI/pi-monitor/extensions/pi-monitor/index.ts
 
 | 区块 | 内容 |
 | --- | --- |
-| 页头 | 窗口选择（今天/昨天/近 7 天/近 30 天/本周/本月/全部/自定义）、指标切换、语言、主题、刷新、`revision`、汇率行 |
+| 页头 | 窗口选择（今天/昨天/近 7 天/近 30 天/本周/本月/全部/自定义）、语言、主题、刷新、`revision`、汇率行 |
 | 概览卡 | 计费 Token / 输入 / 输出 / 缓存读 / 缓存写 / 真实成本 / 估算成本 / 消息数 / 活跃天数 / 会话数 / 本会话（实时），每张带环比 |
-| 热力图 | 53 周 × 7 天，指标可切换（Token / 成本 / 消息），格子可聚焦并带 `aria-label` |
-| 每日趋势 | CSS 柱状图 + 可展开每日表格 |
+| 热力图 | 固定按计费 Token 统计；53 周 × 7 天（随 `weekStart` 对齐），上方月份标签行、左侧星期标签列（每隔一行）；年份选项卡（最近一年 / 各自然年）；格子可聚焦并带 `aria-label` |
+| 每日趋势 | CSS 柱状图 + 可展开每日表格；列宽随天数与容器宽自适应，超出时横向滚动 |
 | 分解表 | 模型 / Provider / 项目 / 会话 / 来源 / 类型，含占比 |
 | 预算进度条 | 日/月各一条，超额变红并显示超支金额 |
 | 操作区 | 重新扫描、重建索引（需输入 `REBUILD`）、导出 Markdown / JSON / CSV |
@@ -132,6 +133,8 @@ pi --no-extensions -e D:/PI/pi-monitor/extensions/pi-monitor/index.ts
 - **货币**：账本与 HTTP API 里的金额字段一律是美元；`¥` 金额 = 美元合计 × 汇率（先合计再换算，不逐条换算）。
 - **时间**：以消息级 `message.timestamp` 定位日界；缺失时回退行级时间并在健康面板标记。
 - **日界**：默认时区为系统本地时区，可配置为 `utc` 或任意 IANA 名称；“今天/本周/本月”均按该时区计算。
+- **图表口径**：热力图与每日趋势固定使用**计费 Token**（不提供指标切换）；成本与消息数看概览卡、分解表与导出。
+- **热力图网格**：“最近一年” = 统计末日所在周为末列、向前 53 周；“年份” = 该自然年 1/1～12/31 对齐到整周。网格区间由服务端计算下发，前端不自行推导周对齐。
 
 ## 数据目录
 

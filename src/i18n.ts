@@ -19,7 +19,6 @@ const EN: Dict = {
   "app.title": "pi-monitor",
 
   "header.window": "Window",
-  "header.metric": "Metric",
   "header.language": "Language",
   "header.theme": "Theme",
   "header.refresh": "Refresh",
@@ -42,10 +41,6 @@ const EN: Dict = {
   "window.from": "From",
   "window.to": "To",
   "window.apply": "Apply",
-
-  "metric.tokens": "Tokens",
-  "metric.cost": "Cost",
-  "metric.messages": "Messages",
 
   "theme.auto": "Auto",
   "theme.light": "Light",
@@ -82,15 +77,16 @@ const EN: Dict = {
   "card.noPrev": "—",
 
   "heatmap.title": "Daily heatmap",
-  "heatmap.monthly": "Monthly totals",
   "heatmap.legend": "Legend",
   "heatmap.cell": "{day} · {value} · {sessions} session(s)",
   "heatmap.less": "Less",
   "heatmap.more": "More",
+  "heatmap.year.recent": "Last 12 months",
 
   "daily.title": "Daily trend",
   "daily.expand": "Show daily table",
   "daily.collapse": "Hide daily table",
+  "daily.peak": "Peak {value}",
   "daily.date": "Date",
 
   "breakdown.title": "Breakdown",
@@ -235,7 +231,6 @@ const ZH: Dict = {
   "app.title": "pi-monitor",
 
   "header.window": "窗口",
-  "header.metric": "指标",
   "header.language": "语言",
   "header.theme": "主题",
   "header.refresh": "刷新",
@@ -258,10 +253,6 @@ const ZH: Dict = {
   "window.from": "起",
   "window.to": "止",
   "window.apply": "应用",
-
-  "metric.tokens": "Token",
-  "metric.cost": "成本",
-  "metric.messages": "消息",
 
   "theme.auto": "跟随系统",
   "theme.light": "浅色",
@@ -298,15 +289,16 @@ const ZH: Dict = {
   "card.noPrev": "—",
 
   "heatmap.title": "每日热力图",
-  "heatmap.monthly": "月度汇总",
   "heatmap.legend": "图例",
   "heatmap.cell": "{day} · {value} · {sessions} 个会话",
   "heatmap.less": "少",
   "heatmap.more": "多",
+  "heatmap.year.recent": "最近一年",
 
   "daily.title": "每日趋势",
   "daily.expand": "展开每日表格",
   "daily.collapse": "收起每日表格",
+  "daily.peak": "峰值 {value}",
   "daily.date": "日期",
 
   "breakdown.title": "分解",

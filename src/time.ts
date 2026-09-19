@@ -452,9 +452,27 @@ export function previousWindow(window: WindowSpec, weekStart: WeekStart): Window
   };
 }
 
-/** 8.4：热力图网格需要的最早/最晚日键（53 周 × 7 天）。 */
+/**
+ * 8.4 `recent` 模式：以 `day` 所在周的末日为末列，向前取固定周数（默认 53 周）。
+ * 末列周日减去 (weeks × 7 - 1) 天必为周一，因此首列天然对齐，无需再规整。
+ */
 export function heatmapRange(day: string, weekStart: WeekStart, weeks = 53): { startDay: string; endDay: string } {
   const endDay = addCivilDays(weekStartDay(day, weekStart), 6);
   const startDay = addCivilDays(endDay, -(weeks * 7 - 1));
   return { startDay, endDay };
+}
+
+/**
+ * 8.4：热力图网格区间。首列对齐到周起始日、末列对齐到周结束日，
+ * 因此 endDay - startDay + 1 必为 7 的整数倍。
+ */
+export function heatmapGridRange(
+  fromDay: string,
+  toDay: string,
+  weekStart: WeekStart,
+): { startDay: string; endDay: string; weeks: number } {
+  const startDay = weekStartDay(fromDay, weekStart);
+  const endDay = addCivilDays(weekStartDay(toDay, weekStart), 6);
+  const weeks = Math.floor((civilDayDiff(startDay, endDay) + 1) / 7);
+  return { startDay, endDay, weeks };
 }

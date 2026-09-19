@@ -70,7 +70,8 @@ export function pathKey(input: string): string {
 
 /**
  * FR-1.6：`project` 缺失时回退解码目录名。
- * 目录名形如 `--D--PI--`（pi 把 `/` 与 `:` 替换为 `-`），解码回 `D:\PI` 或 `/D/PI`。
+ * pi 把项目路径里的 `/` 与 `:` 替换成 `-`，例如项目目录 `acme/app` 会被编码为 `--acme-app--`；
+ * 本函数按当前平台的路径分隔符把它解回原路径。
  */
 export function decodeProjectFromDirName(dirName: string): string | null {
   const trimmed = dirName.replace(/^-+/, "").replace(/-+$/, "");

@@ -1,10 +1,20 @@
-# 依赖（仅 devDependencies 用于类型检查；运行时零依赖，可不安装）
+# 依赖安装目录（仅 devDependencies 用于类型检查；运行时零依赖，可不安装）
 node_modules/
-npm-debug.log*
 
-# 索引备份与运行期数据
-*.bak-*
+# 构建 / 打包产物
+dist/
+build/
+out/
+*.tsbuildinfo
+*.tgz
+*.zip
+coverage/
+
+# 日志与临时文件
+npm-debug.log*
+*.log
 .pi-monitor-tmp/
+*.bak-*
 
 # 编辑器 / 系统
 .vscode/

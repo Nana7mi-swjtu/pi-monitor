@@ -228,6 +228,25 @@ export interface Buckets {
   edges: number[];
 }
 
+/** 8.4 热力图网格（`/api/daily` 追加返回，供仪表盘按周对齐渲染）。 */
+export interface HeatmapGrid {
+  /** 网格首日（= 首个周起始日，ISO 日键）。 */
+  startDay: string;
+  /** 网格末日（= 最后一个周结束日，ISO 日键）。 */
+  endDay: string;
+  /** 网格列数（周数）；`endDay - startDay + 1` 恒等于 `weeks × 7`。 */
+  weeks: number;
+  weekStart: WeekStart;
+  /** `recent` = 最近 53 周；`year` = 指定自然年。 */
+  mode: "recent" | "year";
+  /** `mode === "year"` 时的年份，否则 `null`。 */
+  year: number | null;
+  /** 统计范围首日（网格内其余单元格为补齐格）。 */
+  fromDay: string;
+  /** 统计范围末日。 */
+  toDay: string;
+}
+
 /** 7.5 聚合结果（仪表盘 / 工具 / 导出共用）。 */
 export interface AggregateResult {
   schemaVersion: 1;
@@ -246,6 +265,8 @@ export interface AggregateResult {
   groups?: GroupRow[];
   daily?: DailyRow[];
   buckets?: Buckets;
+  /** 8.4 热力图网格区间（仅 `/api/daily` 填充，导出与工具不带）。 */
+  grid?: HeatmapGrid;
   live?: Totals;
   health?: MetaInfo;
   comparison?: { totals: Totals; hasData: boolean };

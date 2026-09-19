@@ -141,7 +141,22 @@ await check("NG-5 无 CLI 痕迹", () => {
   return offenders.length === 0 ? true : offenders.join("; ");
 });
 
-// 6) P-13：不硬编码汇率 / 不使用 $ 作为面向用户金额符号
+// 6) AC-8.9 / AC-8.2：图表几何回归（ADR-0003 的根因防护）
+await check("AC-8.9 / AC-8.2 图表几何与指标控件", () => {
+  const assets = fs.readFileSync(path.join(root, "src", "dashboard", "assets.ts"), "utf8");
+  const rule = /\.trend \.bar \{([^}]*)\}/.exec(assets);
+  if (rule === null) return "未找到 .trend .bar 规则";
+  // ADR-0003：纵向容器上的 flex 简写会覆盖行内 height 并把柱宽留成 0，导致柱子完全不可见。
+  if (/\bflex\b/.test(rule[1] ?? "")) return ".trend .bar 不得出现 flex 简写";
+  if (!assets.includes('style=\\"width:" + layout.barWidth')) return "柱宽必须来自 trendLayout().barWidth";
+  if (!assets.includes('class=\\"col\\" style=\\"width:" + layout.step')) return "列宽必须来自 trendLayout().step";
+  // D-3：不再有任何指标切换控件。
+  if (/id="metric"/.test(assets)) return "页面不得包含指标切换控件";
+  if (/state\.metric/.test(assets)) return "前端不得持有指标状态";
+  return true;
+});
+
+// 7) P-13：不硬编码汇率 / 不使用 $ 作为面向用户金额符号
 await check("P-13 汇率不是硬编码常量", () => {
   const offenders = [];
   for (const file of productionFiles) {

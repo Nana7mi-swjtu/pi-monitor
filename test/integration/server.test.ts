@@ -158,6 +158,43 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
     assert.ok(Array.isArray(daily["buckets"]["legend"]));
     assert.equal(daily["buckets"]["metric"], "tokens");
 
+    // 8.4 / AC-8.7 / AC-8.8：网格区间由服务端给出，且恒按周对齐。
+    const grid = daily["grid"] as Record<string, any>;
+    assert.equal(grid["mode"], "recent");
+    assert.equal(grid["year"], null);
+    assert.equal(grid["weeks"], 53);
+    assert.equal(grid["weekStart"], "monday");
+    assert.equal(grid["endDay"], "2026-09-20", "末列必须是数据末日所在周的周日");
+    assert.equal(grid["startDay"], "2025-09-15", "首列必须是 53 周前的周一");
+    const gridDays = (Date.parse(grid["endDay"] + "T00:00:00Z") - Date.parse(grid["startDay"] + "T00:00:00Z")) / 86400000 + 1;
+    assert.equal(gridDays, grid["weeks"] * 7, "网格天数必须等于 周数 × 7");
+    for (const boundary of [grid["startDay"], grid["endDay"]]) {
+      const weekday = new Date(boundary + "T00:00:00Z").getUTCDay();
+      assert.ok(weekday === 1 || weekday === 0, "边界必须落在周一/周日");
+    }
+
+    // AC-8.8：year 参数按自然年取范围并重新分桶；补齐格由 fromDay/toDay 标出。
+    const yearDaily = (await (await fetch(`${harness.base}/api/daily?year=2026&metric=tokens`, authed(harness))).json()) as Record<string, any>;
+    assert.equal(yearDaily["grid"]["mode"], "year");
+    assert.equal(yearDaily["grid"]["year"], 2026);
+    assert.equal(yearDaily["grid"]["fromDay"], "2026-01-01");
+    assert.equal(yearDaily["grid"]["toDay"], "2026-12-31");
+    assert.equal(yearDaily["grid"]["startDay"], "2025-12-29", "2026-01-01 所在周的周一");
+    assert.equal(yearDaily["grid"]["weeks"], 53);
+    assert.equal(yearDaily["daily"].length, 1);
+    assert.equal(yearDaily["daily"][0]["day"], "2026-09-19", "该 fixture 的数据落在 2026 年");
+
+    const emptyYear = (await (await fetch(`${harness.base}/api/daily?year=2020&metric=tokens`, authed(harness))).json()) as Record<string, any>;
+    assert.equal(emptyYear["grid"]["year"], 2020);
+    assert.equal(emptyYear["daily"].length, 0, "无数据的年份必须为空而非报错");
+
+    // 10.2：非法 year 等同未提供，回退到 window 解析。
+    for (const bad of ["abcd", "12026", "1900", "99999", ""]) {
+      const fallback = (await (await fetch(`${harness.base}/api/daily?year=${bad}&window=all&metric=tokens`, authed(harness))).json()) as Record<string, any>;
+      assert.equal(fallback["grid"]["mode"], "recent", `year=${JSON.stringify(bad)} 应回退`);
+      assert.equal(fallback["grid"]["year"], null);
+    }
+
     const breakdown = (await (await fetch(`${harness.base}/api/breakdown?window=all&dim=kind&limit=20`, authed(harness))).json()) as Record<string, any>;
     const shareSum = breakdown["groups"].reduce((sum: number, group: Record<string, number>) => sum + group["share"], 0);
     assert.ok(Math.abs(shareSum - 1) < 1e-9, "AC-8.3：占比之和为 100%");

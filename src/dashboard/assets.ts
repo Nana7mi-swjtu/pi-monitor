@@ -79,14 +79,30 @@ h2.sec .hint { color: var(--muted); font-weight: 400; font-size: 12px; }
 .card .k { color: var(--muted); font-size: 12px; }
 .card .v { font-size: 20px; font-weight: 650; margin-top: 2px; word-break: break-all; }
 .card .d { font-size: 11px; color: var(--muted); margin-top: 2px; }
-.trend { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding-top: 6px; overflow-x: auto; }
-.trend .bar { flex: 0 0 14px; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
-.trend .col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.trend .lab { font-size: 9px; color: var(--muted); writing-mode: vertical-rl; }
-.heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 12px); gap: 3px; overflow-x: auto; padding-bottom: 6px; }
+/* 10.1.5 / AC-8.9~8.10：柱宽与列宽一律由 trendLayout() 算出后行内设置。
+   禁止在纵向容器上用 flex 简写设定主轴尺寸（那会把柱高钉死并让柱宽停为 0，见 ADR-0003）。 */
+.trend-scroll { overflow-x: auto; padding-bottom: 4px; }
+.trend { display: flex; align-items: flex-end; height: 140px; padding-top: 6px; width: max-content; margin: 0 auto; }
+.trend .col { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; flex: 0 0 auto; }
+.trend .bar { background: var(--accent); border-radius: 3px 3px 0 0; }
+.trend .lab { font-size: 11px; line-height: 14px; color: var(--muted); white-space: nowrap; }
+h2.sec #daily-toggle { margin-left: auto; }
+/* 10.1.4 / AC-8.7~8.8：月份标签行 + 星期标签列 + 网格共用一个横向滚动容器，保证列对齐。 */
+.heat-wrap { overflow-x: auto; padding-bottom: 4px; }
+.heat-inner { width: max-content; margin: 0 auto; }
+.heat-months { position: relative; height: 15px; margin-left: 34px; }
+.heat-months span { position: absolute; top: 0; font-size: 11px; line-height: 15px; color: var(--muted); white-space: nowrap; }
+.heat-body { display: flex; gap: 6px; }
+.heat-days { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; width: 28px; font-size: 10px; color: var(--muted); }
+.heat-days span { line-height: 12px; text-align: right; }
+.heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 12px); gap: 3px; }
 .heat .cell { width: 12px; height: 12px; border-radius: 2px; background: var(--h0); }
+.heat .cell.pad { background: none; }
 .heat .cell.l1 { background: var(--h1); } .heat .cell.l2 { background: var(--h2); }
 .heat .cell.l3 { background: var(--h3); } .heat .cell.l4 { background: var(--h4); }
+.heat-years { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.heat-years button { font-size: 12px; padding: 2px 8px; }
+.heat-years button[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); }
 .legend { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; flex-wrap: wrap; margin-top: 8px; }
 .legend .sw { width: 12px; height: 12px; border-radius: 2px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -130,6 +146,130 @@ details summary { cursor: pointer; }
 }
 `;
 
+/**
+ * 8.4 / 10.1.4~10.1.5 / AC-8.7~AC-8.10：图表布局纯函数（ADR-0003 D-5）。
+ *
+ * 本常量同时用于两处，不存在第二份实现：
+ *   1) 拼在页面脚本最前面，由浏览器执行；
+ *   2) 由 `test/unit/dashboard-layout.test.ts` 用 `new Function(CHART_JS)` 执行后逐条断言。
+ *
+ * 书写约束：字符串内不得出现反引号与 `${`（否则会截断/介入外层模板字面量）。
+ */
+export const CHART_JS = String.raw`"use strict";
+/* 10.1.5：趋势图柱高上限（px）。 */
+var TREND_PLOT_HEIGHT = 118;
+var TREND_MIN_STEP = 18;
+var TREND_MAX_STEP = 72;
+var TREND_GAP = 3;
+var TREND_LABEL_MIN_PX = 44;
+var TREND_WIDE_LABEL_PX = 40;
+/* 8.4：热力图单元格尺寸（必须与 CSS 中的 12px / 3px 一致）。 */
+var HEAT_CELL = 12;
+var HEAT_GAP = 3;
+
+/* ISO 日键 ±n 天（只用 UTC 民用运算，不受时区/夏令时影响）。 */
+function addDays(day, delta) {
+  var p = day.split("-");
+  var ms = Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])) + delta * 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/* b - a（单位：天）。 */
+function dayOffset(a, b) {
+  var pa = a.split("-");
+  var pb = b.split("-");
+  var ma = Date.UTC(Number(pa[0]), Number(pa[1]) - 1, Number(pa[2]));
+  var mb = Date.UTC(Number(pb[0]), Number(pb[1]) - 1, Number(pb[2]));
+  return Math.round((mb - ma) / 86400000);
+}
+
+/*
+ * AC-8.9：列宽由「天数」与「可用宽度」共同决定，所以图表总宽随天数联动；
+ * 恰好能放下时总宽（含列间隙）≤ 容器宽，放不下时 step 停在下限并由外层横向滚动。
+ */
+function trendLayout(dayCount, availableWidth) {
+  var n = Math.max(1, Math.floor(dayCount || 0));
+  var avail = Math.floor(availableWidth || 0);
+  if (!isFinite(avail) || avail <= 0) avail = TREND_MIN_STEP * n;
+  var gap = TREND_GAP;
+  /* (n - 1) 个间隙必须一起计入，否则刚好“放得下”时仍会多出一条横向滚动。 */
+  var step = Math.floor((avail - (n - 1) * gap) / n);
+  if (step > TREND_MAX_STEP) step = TREND_MAX_STEP;
+  if (step < TREND_MIN_STEP) step = TREND_MIN_STEP;
+  return {
+    step: step,
+    gap: gap,
+    barWidth: Math.max(2, step - gap - 1),
+    width: step * n + (n - 1) * gap,
+    labelEvery: Math.max(1, Math.ceil(TREND_LABEL_MIN_PX / step)),
+    wideLabel: step >= TREND_WIDE_LABEL_PX
+  };
+}
+
+/*
+ * AC-8.10：日期标签。
+ * 候选 = 抽稀位 + 每月 1 日；再按「像素间距 ≥ TREND_LABEL_MIN_PX」贪心取舍，
+ * 因此任意两个非空标签都不会重叠（月起点优先保留，必要时挤掉旁边的普通标签）。
+ * 返回与 days 等长的数组，空字符串表示该列不显示标签。
+ */
+function trendLabels(days, layout) {
+  var i;
+  var out = new Array(days.length);
+  for (i = 0; i < days.length; i += 1) out[i] = "";
+
+  var candidates = [];
+  for (i = 0; i < days.length; i += 1) {
+    var monthStart = days[i].slice(8) === "01";
+    if (!monthStart && i % layout.labelEvery !== 0) continue;
+    candidates.push({ index: i, monthStart: monthStart });
+  }
+  /* 月起点先占位（它们互不冲突：相邻月起点至少相距 28 天）。 */
+  candidates.sort(function (a, b) {
+    if (a.monthStart !== b.monthStart) return a.monthStart ? -1 : 1;
+    return a.index - b.index;
+  });
+
+  var taken = [];
+  for (i = 0; i < candidates.length; i += 1) {
+    var pixel = candidates[i].index * layout.step;
+    var free = true;
+    for (var t = 0; t < taken.length; t += 1) {
+      if (Math.abs(taken[t] * layout.step - pixel) < TREND_LABEL_MIN_PX) { free = false; break; }
+    }
+    if (free) taken.push(candidates[i].index);
+  }
+
+  for (i = 0; i < taken.length; i += 1) {
+    var day = days[taken[i]];
+    var isFirst = day.slice(8) === "01";
+    out[taken[i]] = (layout.wideLabel || isFirst) ? day.slice(5) : day.slice(8);
+  }
+  return out;
+}
+
+/*
+ * AC-8.7：月份标签行的列位置。
+ * 某列「首个在范围内日期的月份」与前一列不同时，就在该列打一个标签。
+ */
+function heatmapMonthCols(grid) {
+  var out = [];
+  var prevMonth = -1;
+  for (var col = 0; col < grid.weeks; col += 1) {
+    var first = null;
+    for (var row = 0; row < 7; row += 1) {
+      var day = addDays(grid.startDay, col * 7 + row);
+      if (day >= grid.fromDay && day <= grid.toDay) { first = day; break; }
+    }
+    if (first === null) continue;
+    var month = Number(first.slice(5, 7));
+    if (month === prevMonth) continue;
+    out.push({ col: col, month: month, left: col * (HEAT_CELL + HEAT_GAP) });
+    prevMonth = month;
+  }
+  return out;
+}
+`;
+
 const APP_JS = String.raw`
 "use strict";
 const BOOT = window.__PI_MONITOR_BOOT__;
@@ -139,7 +279,7 @@ const state = {
   window: BOOT.config.defaultWindow || "last7d",
   from: null,
   to: null,
-  metric: "tokens",
+  /* AC-8.2 / D-3：图表固定按计费 Token 统计，不再有指标切换状态。 */
   dim: "model",
   locale: BOOT.config.locale,
   theme: BOOT.config.theme,
@@ -147,6 +287,10 @@ const state = {
   summary: null,
   daily: null,
   heat: null,
+  /* 8.4 / AC-8.8：热力图年份选择。null = 最近一年；heatAll 为全量日表（用于推导可选年份）。 */
+  heatYear: null,
+  heatAll: null,
+  heatYears: [],
   breakdown: null,
   health: null,
   config: BOOT.config,
@@ -294,10 +438,6 @@ function renderChrome() {
   document.getElementById("btn-export-md").textContent = t("action.exportMd");
   document.getElementById("btn-export-json").textContent = t("action.exportJson");
   document.getElementById("btn-export-csv").textContent = t("action.exportCsv");
-  const metricSelect = document.getElementById("metric");
-  metricSelect.options[0].textContent = t("metric.tokens");
-  metricSelect.options[1].textContent = t("metric.cost");
-  metricSelect.options[2].textContent = t("metric.messages");
   const windowSelect = document.getElementById("window");
   Array.prototype.forEach.call(windowSelect.options, function (option) {
     option.textContent = t("window." + option.value);
@@ -310,9 +450,31 @@ function renderChrome() {
   document.getElementById("btn-apply-window").textContent = t("window.apply");
   document.getElementById("daily-toggle").textContent = document.getElementById("daily-body").hidden
     ? t("daily.expand") : t("daily.collapse");
+  renderHeatYears();
   Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
     node.textContent = t(node.getAttribute("data-i18n"));
   });
+}
+/* AC-8.8：年份选项卡 = 「最近一年」+ 数据中出现过的年份（倒序）。 */
+function renderHeatYears() {
+  const node = document.getElementById("heat-years");
+  if (!node) return;
+  const options = [{ value: null, label: t("heatmap.year.recent") }];
+  state.heatYears.forEach(function (year) { options.push({ value: year, label: String(year) }); });
+  if (options.length <= 1) { node.innerHTML = ""; return; }
+  node.innerHTML = options.map(function (option) {
+    const raw = option.value === null ? "" : String(option.value);
+    const selected = state.heatYear === option.value ? "true" : "false";
+    return "<button type=\"button\" role=\"tab\" data-year=\"" + raw + "\" aria-selected=\"" + selected + "\">" +
+      esc(option.label) + "</button>";
+  }).join("");
+}
+/* 全量日表 → 出现过数据的年份（倒序）。 */
+function listYears(heat) {
+  const seen = {};
+  const daily = (heat && heat.daily) || [];
+  for (let i = 0; i < daily.length; i += 1) seen[daily[i].day.slice(0, 4)] = true;
+  return Object.keys(seen).map(Number).sort(function (a, b) { return b - a; });
 }
 function warningsFrom(health, config) {
   const out = [];
@@ -396,17 +558,17 @@ function renderCards() {
 }
 function renderHeatmap() {
   const node = document.getElementById("heat");
+  const monthsNode = document.getElementById("heat-months");
+  const daysNode = document.getElementById("heat-days");
   const legendNode = document.getElementById("heat-legend");
   const heat = state.heat;
-  if (!heat || !heat.daily) { node.innerHTML = ""; legendNode.innerHTML = ""; return; }
+  const grid = heat && heat.grid;
+  if (!heat || !heat.daily || !grid) {
+    node.innerHTML = ""; monthsNode.innerHTML = ""; daysNode.innerHTML = ""; legendNode.innerHTML = "";
+    return;
+  }
   const byDay = {};
   heat.daily.forEach(function (row) { byDay[row.day] = row; });
-  const metricValue = function (row) {
-    if (!row) return 0;
-    if (state.metric === "tokens") return row.totals.tokens.billed;
-    if (state.metric === "messages") return row.totals.messages.total;
-    return (row.totals.cost.cny.known || 0) + (row.totals.cost.cny.estimated || 0);
-  };
   const edges = (heat.buckets && heat.buckets.edges) || [0, 0, 0];
   const level = function (value) {
     if (value <= 0) return 0;
@@ -416,50 +578,76 @@ function renderHeatmap() {
     return 4;
   };
 
-  // 8.4：53 周 × 7 天网格（周一为首行），从窗口末日向前推。
-  const days = Object.keys(byDay).sort();
-  const lastDay = days.length > 0 ? days[days.length - 1] : null;
-  if (lastDay === null) { node.innerHTML = "<div class=\"muted\">" + esc(t("empty.range")) + "</div>"; return; }
-  const end = new Date(lastDay + "T00:00:00Z");
-  const weekday = end.getUTCDay();
-  const toMondayOffset = weekday === 0 ? 6 : weekday - 1;
-  const gridEnd = new Date(end.getTime() + (6 - toMondayOffset) * 86400000);
+  // 8.4：网格区间由服务端下发的 grid 给出（按 weekStart 对齐），前端不自算周对齐。
+  // AC-8.2 / D-3：指标固定为计费 Token。
   const cells = [];
-  for (let i = 53 * 7 - 1; i >= 0; i -= 1) {
-    const date = new Date(gridEnd.getTime() - i * 86400000);
-    const key = date.toISOString().slice(0, 10);
+  for (let i = 0; i < grid.weeks * 7; i += 1) {
+    const key = addDays(grid.startDay, i);
+    // 8.4：补齐格（不属于统计范围）不算 0 值日，无背景也不可聚焦。
+    if (key < grid.fromDay || key > grid.toDay) { cells.push("<span class=\"cell pad\"></span>"); continue; }
     const row = byDay[key];
-    const value = metricValue(row);
+    const value = row ? row.totals.tokens.billed : 0;
     const sessions = row ? row.totals.sessions : 0;
-    const label = t("heatmap.cell", { day: key, value: state.metric === "cost" ? fmtCNY(value) : fmtInt(value), sessions: sessions });
+    const label = t("heatmap.cell", { day: key, value: fmtInt(value), sessions: sessions });
     cells.push("<span class=\"cell l" + level(value) + "\" tabindex=\"0\" role=\"img\" title=\"" + esc(label) + "\" aria-label=\"" + esc(label) + "\"></span>");
   }
   node.innerHTML = cells.join("");
+
+  // AC-8.7：上方月份标签行（与网格同处一个滚动容器，列对齐不会错位）。
+  monthsNode.style.width = (grid.weeks * (HEAT_CELL + HEAT_GAP) - HEAT_GAP) + "px";
+  monthsNode.innerHTML = heatmapMonthCols(grid).map(function (item) {
+    return "<span style=\"left:" + item.left + "px\">" + esc(t("month." + item.month)) + "</span>";
+  }).join("");
+
+  // AC-8.7：左侧星期标签列，每隔一行标注（行 0/2/4）；顺序随 weekStart 变化（0=周日…6=周六）。
+  const order = grid.weekStart === "sunday" ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 0];
+  const dayLabels = [];
+  for (let r = 0; r < 7; r += 1) {
+    dayLabels.push(r === 0 || r === 2 || r === 4 ? esc(t("weekday." + order[r])) : "");
+  }
+  daysNode.innerHTML = dayLabels.map(function (text) { return "<span>" + text + "</span>"; }).join("");
+
   const labels = (heat.buckets && heat.buckets.legend) || [];
   legendNode.innerHTML = esc(t("heatmap.less")) + labels.map(function (text, index) {
     return "<span class=\"sw\" style=\"background:var(--h" + Math.min(4, index) + ")\"></span><span>" + esc(text) + "</span>";
   }).join("") + esc(t("heatmap.more"));
+  renderHeatYears();
 }
 function renderTrend() {
   const node = document.getElementById("trend");
+  const scroll = document.getElementById("trend-scroll");
+  const peakNode = document.getElementById("trend-peak");
   const daily = state.daily && state.daily.daily ? state.daily.daily : [];
-  if (daily.length === 0) { node.innerHTML = "<div class=\"muted\">" + esc(t("empty.range")) + "</div>"; return; }
-  const value = function (row) {
-    if (state.metric === "tokens") return row.totals.tokens.billed;
-    if (state.metric === "messages") return row.totals.messages.total;
-    return (row.totals.cost.cny.known || 0) + (row.totals.cost.cny.estimated || 0);
-  };
-  const max = Math.max.apply(null, daily.map(value).concat([1]));
-  node.innerHTML = daily.map(function (row) {
-    const height = Math.max(2, Math.round((value(row) / max) * 118));
-    const label = state.metric === "cost" ? fmtCNY(value(row)) : fmtInt(value(row));
-    return "<div class=\"col\" title=\"" + esc(row.day + " \u00b7 " + label) + "\">" +
-      "<div class=\"bar\" style=\"height:" + height + "px\"></div><div class=\"lab\">" + esc(row.day.slice(5)) + "</div></div>";
-  }).join("");
   const body = document.getElementById("daily-body");
   const head = "<tr><th>" + esc(t("daily.date")) + "</th><th>" + esc(t("col.billed")) + "</th><th>" +
     esc(t("col.input")) + "</th><th>" + esc(t("col.output")) + "</th><th>" + esc(t("col.cacheRead")) +
     "</th><th>" + esc(t("col.cost")) + "</th><th>" + esc(t("col.messages")) + "</th></tr>";
+  if (daily.length === 0) {
+    node.innerHTML = "<div class=\"muted\">" + esc(t("empty.range")) + "</div>";
+    peakNode.textContent = "";
+    body.innerHTML = head;
+    return;
+  }
+  // AC-8.2 / D-3：图表数值恒为当日计费 Token。
+  const values = daily.map(function (row) { return row.totals.tokens.billed; });
+  const max = Math.max.apply(null, values.concat([1]));
+  // AC-8.9：列宽 = f(天数, 容器宽)，所以图表总宽随日期数联动；
+  // 宽度不够时 step 停在下限，由 .trend-scroll 横向滚动。
+  const layout = trendLayout(daily.length, scroll.clientWidth);
+  // 列间隙由 JS 下发（与 trendLayout 的宽度计算保持同一来源）。
+  node.style.gap = layout.gap + "px";
+  // AC-8.10：标签位置一次性算好（保证不重叠）。
+  const labels = trendLabels(daily.map(function (row) { return row.day; }), layout);
+  peakNode.textContent = t("daily.peak", { value: fmtInt(max) });
+  node.innerHTML = daily.map(function (row, index) {
+    const value = row.totals.tokens.billed;
+    // AC-8.9：宽高均为行内显式值，不再依赖 flex 主轴尺寸。
+    const height = value <= 0 ? 2 : Math.max(2, Math.round((value / max) * TREND_PLOT_HEIGHT));
+    return "<div class=\"col\" style=\"width:" + layout.step + "px\" title=\"" +
+      esc(row.day + " \u00b7 " + fmtInt(value) + " tokens") + "\">" +
+      "<div class=\"bar\" style=\"width:" + layout.barWidth + "px;height:" + height + "px\"></div>" +
+      "<div class=\"lab\">" + esc(labels[index]) + "</div></div>";
+  }).join("");
   body.innerHTML = head + daily.map(function (row) {
     return "<tr><td>" + esc(row.day) + "</td><td>" + fmtInt(row.totals.tokens.billed) + "</td><td>" +
       fmtInt(row.totals.tokens.input) + "</td><td>" + fmtInt(row.totals.tokens.output) + "</td><td>" +
@@ -560,12 +748,12 @@ function setError(error) {
 async function loadAll() {
   state.loading = true;
   try {
-    const [health, config, summary, daily, heat, breakdown] = await Promise.all([
+    const [health, config, summary, daily, heatAll, breakdown] = await Promise.all([
       api("/api/health?ts=" + Date.now()),
       api("/api/config?ts=" + Date.now()),
       api("/api/summary?" + query()),
-      api("/api/daily?" + query({ metric: state.metric })),
-      api("/api/daily?" + query({ window: "all", metric: state.metric })),
+      api("/api/daily?" + query({ metric: "tokens" })),
+      api("/api/daily?" + query({ window: "all", metric: "tokens" })),
       api("/api/breakdown?" + query({ dim: state.dim, limit: state.config.tableLimit || 20 })),
     ]);
     state.health = health;
@@ -574,7 +762,15 @@ async function loadAll() {
     if (config.locale) state.locale = config.locale;
     state.summary = summary;
     state.daily = daily;
-    state.heat = heat;
+    state.heatAll = heatAll;
+    state.heatYears = listYears(heatAll);
+    // AC-8.8：年份已从数据中消失时回退到「最近一年」。
+    if (state.heatYear !== null && state.heatYears.indexOf(state.heatYear) < 0) state.heatYear = null;
+    // 8.4：最近一年直接复用 window=all 的响应（其 grid 为最近 53 周）；
+    //      选定年份时另取一次（服务端按该自然年重新分桶）。
+    state.heat = state.heatYear === null
+      ? heatAll
+      : await api("/api/daily?year=" + state.heatYear + "&metric=tokens");
     state.breakdown = breakdown;
     setError(null);
   } catch (error) {
@@ -809,10 +1005,15 @@ function wire() {
     const to = document.getElementById("window-to").value.trim();
     if (from && to) { state.from = from; state.to = to; state.window = "custom"; loadAll(); }
   });
-  document.getElementById("metric").addEventListener("change", function (event) {
-    state.metric = event.target.value;
+  document.getElementById("heat-years").addEventListener("click", function (event) {
+    const button = event.target.closest("button[data-year]");
+    if (!button) return;
+    const raw = button.getAttribute("data-year");
+    state.heatYear = raw === "" ? null : Number(raw);
     loadAll();
   });
+  // AC-8.9：列宽依赖容器宽度，改变窗口尺寸后必须重算。
+  window.addEventListener("resize", function () { renderTrend(); });
   document.getElementById("btn-refresh").addEventListener("click", loadAll);
   document.getElementById("btn-lang").addEventListener("click", function () {
     state.locale = state.locale === "zh-CN" ? "en-US" : "zh-CN";
@@ -898,11 +1099,6 @@ export function renderDashboardHtml(options: RenderOptions): string {
       </select></label>
       <label class="ctl"><input type="text" id="window-from" size="8"><input type="text" id="window-to" size="8">
         <button type="button" id="btn-apply-window">apply</button></label>
-      <label class="ctl"><span data-i18n="header.metric">Metric</span><select id="metric">
-        <option value="tokens" selected>tokens</option>
-        <option value="cost">cost</option>
-        <option value="messages">messages</option>
-      </select></label>
       <button type="button" id="btn-lang"></button>
       <button type="button" id="btn-theme" aria-label="theme">◐</button>
       <button type="button" id="btn-refresh"></button>
@@ -921,15 +1117,25 @@ export function renderDashboardHtml(options: RenderOptions): string {
   </section>
 
   <section class="panel">
-    <h2 class="sec" id="sec-heatmap">heatmap</h2>
-    <div class="heat" id="heat" role="group"></div>
+    <h2 class="sec"><span id="sec-heatmap">heatmap</span>
+      <span class="heat-years" id="heat-years" role="tablist"></span></h2>
+    <div class="heat-wrap">
+      <div class="heat-inner">
+        <div class="heat-months" id="heat-months" aria-hidden="true"></div>
+        <div class="heat-body">
+          <div class="heat-days" id="heat-days" aria-hidden="true"></div>
+          <div class="heat" id="heat" role="group"></div>
+        </div>
+      </div>
+    </div>
     <div class="legend" id="heat-legend"></div>
   </section>
 
   <section class="panel">
     <h2 class="sec"><span id="sec-trend">trend</span>
+      <span class="hint" id="trend-peak"></span>
       <button type="button" id="daily-toggle"></button></h2>
-    <div class="trend" id="trend"></div>
+    <div class="trend-scroll" id="trend-scroll"><div class="trend" id="trend"></div></div>
     <div class="scroll" style="margin-top:10px"><table id="daily-table"><tbody id="daily-body" hidden></tbody></table></div>
   </section>
 
@@ -991,7 +1197,7 @@ export function renderDashboardHtml(options: RenderOptions): string {
 <div class="toast" id="toast" hidden></div>
 
 <script>window.__PI_MONITOR_BOOT__ = ${JSON.stringify(boot).replace(/</g, "\\u003c")};</script>
-<script>${APP_JS}</script>
+<script>${CHART_JS}${APP_JS}</script>
 </body>
 </html>
 `;

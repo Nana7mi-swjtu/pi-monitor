@@ -409,6 +409,7 @@ function queryOptions(search: URLSearchParams): QueryOptions {
     "source",
     "sessionId",
     "metric",
+    "year",
     "dim",
     "limit",
     "cursor",

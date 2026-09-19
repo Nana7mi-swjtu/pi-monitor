@@ -10,11 +10,12 @@ import { updateConfigFile, type LoadedConfig } from "../config.ts";
 import { buildHealthReport, measureIndexSize, type HealthReport } from "../health.ts";
 import { windowLabel } from "../i18n.ts";
 import type { MonitorEngine } from "../scanner.ts";
-import { dayKey, isValidTimezone, parseWindowInput, previousWindow, resolveTimezone, resolveWindow } from "../time.ts";
+import { civilDayDiff, dayKey, heatmapGridRange, heatmapRange, isValidTimezone, parseWindowInput, previousWindow, resolveTimezone, resolveWindow } from "../time.ts";
 import type {
   AggregateDimension,
   AggregateResult,
   DedupeSkip,
+  HeatmapGrid,
   Locale,
   QueryFilters,
   UsageRecord,
@@ -44,6 +45,7 @@ export interface QueryOptions {
   source?: string;
   sessionId?: string;
   metric?: string;
+  year?: string;
   dim?: string;
   limit?: string;
   cursor?: string;
@@ -133,22 +135,61 @@ export function buildSummary(ctx: MonitorContext, query: QueryOptions): Aggregat
   }).result;
 }
 
-/** `GET /api/daily`：`daily[]` + `buckets`（10.2 / 8.4）。 */
+/** `GET /api/daily`：`daily[]` + `buckets`（10.2 / 8.4）+ `grid`（周对齐网格区间）。 */
 export function buildDaily(ctx: MonitorContext, query: QueryOptions): AggregateResult {
   const tz = resolveQueryTimezone(ctx, query);
-  const window = resolveQueryWindow(ctx, query, tz);
-  return buildAggregate({
+  const weekStart = ctx.engine.config.weekStart;
+  const now = Date.now();
+
+  // 8.4：`year` 存在时按该自然年取范围（忽略 window/from/to）；非法值等同未提供。
+  const year = parseYear(query.year);
+  const window = year === null
+    ? resolveQueryWindow(ctx, query, tz)
+    : resolveWindow(
+        { kind: "custom", fromDay: `${year}-01-01`, toDay: `${year}-12-31` },
+        { tz, weekStart, now },
+      );
+
+  const result = buildAggregate({
     records: recordsForTimezone(ctx.engine.records, tz),
     window,
     filters: readFilters(query),
     rate: ctx.engine.config.currency.rate,
-    weekStart: ctx.engine.config.weekStart,
-    now: Date.now(),
+    weekStart,
+    now,
     locale: ctx.locale,
     withDaily: true,
     metric: normalizeMetric(query.metric),
     labelFor: labelFor(ctx.locale),
   }).result;
+
+  // 8.4：网格区间由服务端给出，前端不得自行实现周对齐。
+  // `window=all` 的真实末日由 aggregate 回填到 `result.window.to`。
+  const anchorDay = result.window.to.length > 0 ? result.window.to : dayKey(now, tz);
+  const fromDay = year === null ? anchorDay : `${year}-01-01`;
+  const toDay = year === null ? anchorDay : `${year}-12-31`;
+  const span = year === null
+    ? heatmapRange(anchorDay, weekStart, 53)
+    : heatmapGridRange(fromDay, toDay, weekStart);
+  const grid: HeatmapGrid = {
+    startDay: span.startDay,
+    endDay: span.endDay,
+    weeks: Math.floor((civilDayDiff(span.startDay, span.endDay) + 1) / 7),
+    weekStart,
+    mode: year === null ? "recent" : "year",
+    year,
+    fromDay,
+    toDay,
+  };
+
+  return { ...result, grid };
+}
+
+/** `year` 只接受 1970..2200 的四位数字，其余一律当作未提供（10.2）。 */
+function parseYear(raw: string | undefined): number | null {
+  if (raw === undefined || !/^\d{4}$/.test(raw)) return null;
+  const year = Number(raw);
+  return year >= 1970 && year <= 2200 ? year : null;
 }
 
 /** `GET /api/breakdown`：`groups[]`（10.2 / FR-5.3）。 */

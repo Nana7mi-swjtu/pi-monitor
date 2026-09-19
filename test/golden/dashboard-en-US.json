@@ -40,7 +40,13 @@
   "window.today": "Today",
   "window.last7d": "Last 7 days",
   "window.all": "All time",
-  "metric.tokens": "Tokens",
-  "metric.cost": "Cost",
-  "metric.messages": "Messages"
+  "heatmap.year.recent": "Last 12 months",
+  "daily.peak": "Peak {value}",
+  "weekday.0": "Sun",
+  "weekday.1": "Mon",
+  "weekday.3": "Wed",
+  "weekday.5": "Fri",
+  "month.1": "Jan",
+  "month.9": "Sep",
+  "month.12": "Dec"
 }

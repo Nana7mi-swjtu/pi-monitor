@@ -40,7 +40,13 @@
   "window.today": "今天",
   "window.last7d": "近 7 天",
   "window.all": "全部",
-  "metric.tokens": "Token",
-  "metric.cost": "成本",
-  "metric.messages": "消息"
+  "heatmap.year.recent": "最近一年",
+  "daily.peak": "峰值 {value}",
+  "weekday.0": "周日",
+  "weekday.1": "周一",
+  "weekday.3": "周三",
+  "weekday.5": "周五",
+  "month.1": "1 月",
+  "month.9": "9 月",
+  "month.12": "12 月"
 }
