@@ -239,7 +239,6 @@ npm install @evan7der/pi-monitor --prefix "$env:USERPROFILE\.pi\agent\npm" --leg
 pi-monitor/
 ├─ package.json                    # pi manifest；dependencies 为空；files 白名单 = extensions/ + src/
 ├─ README.md / LICENSE
-├─ .github/workflows/publish.yml   # 推送 v* 标签 → 校验 → npm publish
 ├─ extensions/pi-monitor/index.ts  # 唯一扩展入口：/tokens、token_stats、事件
 ├─ src/
 │  ├─ scanner.ts                   # 编排：发现 → 解析 → 去重 → 落账 → 更新 meta
@@ -268,62 +267,9 @@ npm run test                # 单元 + 集成 + 契约测试
 npm run typecheck           # tsc --noEmit
 npm run bench               # 性能基准（生成 500 MiB 语料，约 25 s）
 npm run gate                # 静态约束元测试
-npm run pack:dry            # 查看 npm 发布产物会包含哪些文件（不落盘、不跑脚本）
+npm run pack:dry            # 查看 npm 打包会包含哪些文件（不落盘、不跑脚本）
 npm run fixtures            # 重新生成 test/fixtures/sessions/ 下的会话 fixture
 ```
-
-### 发布
-
-发布产物就是交付物（`extensions/` + `src/`，外加 npm 恒包含的 `package.json` / `README.md` / `LICENSE`），没有构建步骤。
-`npm publish` 前必须 `npm run check` 全绿（`prepack` 已内置）；质量门的「可发布性」检查会执行 `npm pack --dry-run`，
-确认打包产物真的包含扩展入口及其全部相对 import。
-
-**第 1 步：首个版本手工发一次**（Trusted Publisher 只能给**已存在**的包配置，所以首次绕不过去）
-
-> ⚠️ npm 现已强制：**发布必须走账号 2FA（模式 `auth-and-writes`，`auth-only` 不够）或 bypass-2FA 的 Granular token**。
-> 两者都没有时会直接报 `E403 Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.`
-> 另外 `npm login` 拿到的是 **2 小时会话 token**，过期后要重新登录。
-
-```powershell
-# 先在 npmjs.com → 头像 → Account settings → Two-Factor Authentication 开启 2FA（TOTP，模式 auth-and-writes）
-npm login      # 浏览器 2FA；会话 token 2 小时有效
-npm publish --access public   # 会提示 Enter one-time password: 输入有效期 6 位码
-#   首次发布前可先干跑：npm publish --dry-run --access public
-```
-
-`npm publish` 会先跑 `prepack = npm run check`，全绿才发得出去。
-
-**第 2 步（推荐）：改用 Trusted Publishing（OIDC），此后不需要任何 token**
-
-1. 仓库设为 **public**（Trusted Publishing 与 provenance 都只支持公开仓库）
-2. 打开 `https://www.npmjs.com/package/@evan7der/pi-monitor/access` → **Trusted Publisher** → **GitHub Actions**，填：
-   - Organization or user：`Nana7mi-swjtu`
-   - Repository：`pi-monitor`
-   - Workflow filename：`publish.yml`（只填文件名，必须与 `.github/workflows/` 下的文件同名）
-   - Environment name：留空
-   - **Allowed actions：除了恒允许的 `npm stage publish`，必须再允许直接 `npm publish`**——
-     只允许 stage 的话，每次发布会变成需要你人工 2FA 审批的 staged publishing
-3. 以后 `npm version patch` + `git push --follow-tags`，由 `.github/workflows/publish.yml` 用 OIDC 发布
-   （需要 npm ≥ 11.5.1，workflow 已自动升级；provenance 自动附带）
-
-**备选：用 token 跑 CI**（仓库暂时私有、或不想改公开时）
-
-旧版 Classic token 已于 2025-12-09 全部吊销，现在只能用 **Granular access token**：
-头像 → **Access Tokens** → **Generate New Token**，然后
-
-| 字段 | 选什么 | 为什么 |
-| --- | --- | --- |
-| Bypass two-factor authentication | **勾上** | 不勾则 CI 直接 E403，且不会提示 OTP |
-| Permissions | **Read and write (publish and stage)** | `stage only` 只会暂存，需人工审批 |
-| Select Packages | **All Packages**（或选中 scope `@evan7der`） | 首个版本前该包还不存在，选不了具体包 |
-| Expiration | 最长 90 天 | 到期必须轮换；想免轮换就用 Trusted Publishing |
-
-把它存成仓库 secret `NPM_TOKEN`（Settings → Secrets and variables → Actions → New repository secret）。
-GitHub Secrets 不进 git、日志里会打码；**永远不要把 token 写进 workflow / README / `.npmrc` 并提交**。
-不需要在 CI 里配 npm 用户名：token（或 OIDC）本身就是身份。
-
-> **provenance**：GitHub 自 2023-07 起不支持“私有仓库源码 → 公开包”的 provenance，所以 workflow 默认
-> 不传 `--provenance`；仓库公开后把 workflow 里的 `PROVENANCE` 改成 `"true"`（OIDC 方式会自动附带）。
 
 ### 约定
 
