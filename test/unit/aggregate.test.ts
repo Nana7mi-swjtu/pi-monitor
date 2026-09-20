@@ -19,6 +19,7 @@ import {
   sumTotals,
 } from "../../src/aggregate.ts";
 import { materializeRecords } from "../../src/scanner.ts";
+import { normalizeProject } from "../../src/paths.ts";
 import { resolveWindow } from "../../src/time.ts";
 import type { AggregateDimension, DailyRow, Totals, UsageRecord } from "../../src/types.ts";
 import { fixturePath, parseFixture } from "../helpers.ts";
@@ -137,7 +138,22 @@ test("FR-5.2：过滤器可组合（AND）", async () => {
   assert.equal(applyFilters(records, { model: "acme-1", sessionId: "sess-piweb" }).length, 1);
   assert.equal(applyFilters(records, { provider: "nobody" }).length, 0);
   assert.equal(applyFilters(records, { provider: "(unknown)" }).length, 1, "null provider 归入 (unknown)");
-  assert.equal(applyFilters(records, { project: "D:\\fixtures\\proj-piweb" }).length, 1);
+  // FR-1.6：fixture 的 header cwd 是 Windows 绝对路径 `D:\fixtures\proj-piweb`。
+  // 生产代码用 normalizePath 规范化它，而在 POSIX 上该串不是绝对路径，会被解析成
+  // `<cwd>/D:\fixtures\proj-piweb`，所以期望值必须由同一个函数推导 ——
+  // 直接写死 Windows 字面量等于给断言加了“只在 Windows 成立”的平台假设（CI 上会红）。
+  const projectP = normalizeProject("D:\\fixtures\\proj-piweb", fixturePath("piweb-custom.jsonl"));
+  assert.ok(
+    records.some((record) => record.project === projectP),
+    "record.project 取自 session header 的 cwd（经 normalizeProject 规范化）",
+  );
+  assert.equal(applyFilters(records, { project: projectP }).length, 1, "按 project 过滤命中");
+  assert.equal(
+    applyFilters(records, { project: projectP, source: "pi-web" }).length,
+    1,
+    "project + source 仍为 AND",
+  );
+  assert.equal(applyFilters(records, { project: `${projectP}-missing` }).length, 0, "project 为精确匹配");
 });
 
 test("M-3 / M-4：真实成本与估算成本分开合计，且 CNY 由 USD 合计换算得出", async () => {
