@@ -1,6 +1,6 @@
 {
   "name": "@evan7der/pi-monitor",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "pi usage ledger and local browser dashboard (tokens, CNY cost, heatmap). Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",

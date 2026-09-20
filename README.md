@@ -29,7 +29,7 @@
 
 ```powershell
 pi install npm:@evan7der/pi-monitor          # 最新版
-pi install npm:@evan7der/pi-monitor@1.2.0    # 锁定版本
+pi install npm:@evan7der/pi-monitor@1.2.1    # 锁定版本
 pi update --extensions                       # 升级（含本包在内的全部包）
 pi remove npm:@evan7der/pi-monitor           # 卸载
 ```
