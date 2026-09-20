@@ -16,6 +16,42 @@ import { createNullLogger } from "../../src/health.ts";
 import { MonitorEngine } from "../../src/scanner.ts";
 import { assistantEntry, cleanup, makeTempAgentDir, writeSessionFile } from "../helpers.ts";
 
+/**
+ * 时间基准：AC-8.7（最近一年网格）与 FR-10.6（当日预算）断言的是「今天」，
+ * 因此会话数据必须写在当前 UTC 日（harness 的 timezone 固定为 utc）。
+ * 之前这里写死 `2026-09-19`：机器日期一旦跨过该日，窗口 `today` 就变空，
+ * 这些断言会持续失败（并非被测逻辑回归）。
+ */
+const RUN_AT = Date.now();
+const DAY_MS = 86_400_000;
+const TODAY = new Date(RUN_AT).toISOString().slice(0, 10);
+const YEAR = Number(TODAY.slice(0, 4));
+const EMPTY_YEAR = YEAR - 10;
+
+/** 当前 UTC 日内的一个时间戳（不早于当日 00:00:01Z，保证不落到前一天）。 */
+function todayAt(msBefore: number): string {
+  return new Date(Math.max(RUN_AT - msBefore, Date.parse(`${TODAY}T00:00:01Z`))).toISOString();
+}
+
+function addDays(day: string, delta: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + delta * DAY_MS).toISOString().slice(0, 10);
+}
+
+function weekdayOf(day: string): number {
+  return new Date(`${day}T00:00:00Z`).getUTCDay();
+}
+
+/** 周一为周起始时，`day` 所在周的周一 / 周日。 */
+const mondayOf = (day: string): string => addDays(day, -((weekdayOf(day) + 6) % 7));
+const sundayOf = (day: string): string => addDays(day, (7 - weekdayOf(day)) % 7);
+
+const GRID_END_DAY = sundayOf(TODAY);
+const GRID_START_DAY = addDays(GRID_END_DAY, -(53 * 7 - 1));
+const YEAR_FROM_DAY = `${YEAR}-01-01`;
+const YEAR_TO_DAY = `${YEAR}-12-31`;
+const YEAR_START_DAY = mondayOf(YEAR_FROM_DAY);
+const YEAR_WEEKS = Math.floor((Date.parse(`${sundayOf(YEAR_TO_DAY)}T00:00:00Z`) - Date.parse(`${YEAR_START_DAY}T00:00:00Z`)) / DAY_MS / 7) + 1;
+
 interface Harness {
   agentDir: string;
   engine: MonitorEngine;
@@ -31,8 +67,8 @@ async function startHarness(options: { port?: number; portRange?: number } = {})
   const dir = path.join(agentDir, "sessions", "--proj--");
   fs.mkdirSync(dir, { recursive: true });
   writeSessionFile(dir, "a.jsonl", [
-    assistantEntry({ id: "a1", iso: "2026-09-19T10:00:00.000Z", input: 100, output: 50, cacheRead: 1000, costTotal: 0.000048 }),
-    assistantEntry({ id: "a2", iso: "2026-09-19T10:05:00.000Z", input: 10, output: 10, costTotal: 0.00002 }),
+    assistantEntry({ id: "a1", iso: todayAt(0), input: 100, output: 50, cacheRead: 1000, costTotal: 0.000048 }),
+    assistantEntry({ id: "a2", iso: todayAt(5 * 60_000), input: 10, output: 10, costTotal: 0.00002 }),
   ]);
 
   const loaded = loadConfigFromRaw({ timezone: "utc", locale: "zh-CN" });
@@ -154,7 +190,7 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
 
     const daily = (await (await fetch(`${harness.base}/api/daily?window=all&metric=tokens`, authed(harness))).json()) as Record<string, any>;
     assert.equal(daily["daily"].length, 1);
-    assert.equal(daily["daily"][0]["day"], "2026-09-19");
+    assert.equal(daily["daily"][0]["day"], TODAY);
     assert.ok(Array.isArray(daily["buckets"]["legend"]));
     assert.equal(daily["buckets"]["metric"], "tokens");
 
@@ -164,8 +200,8 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
     assert.equal(grid["year"], null);
     assert.equal(grid["weeks"], 53);
     assert.equal(grid["weekStart"], "monday");
-    assert.equal(grid["endDay"], "2026-09-20", "末列必须是数据末日所在周的周日");
-    assert.equal(grid["startDay"], "2025-09-15", "首列必须是 53 周前的周一");
+    assert.equal(grid["endDay"], GRID_END_DAY, "末列必须是数据末日所在周的周日");
+    assert.equal(grid["startDay"], GRID_START_DAY, "首列必须是 53 周前的周一");
     const gridDays = (Date.parse(grid["endDay"] + "T00:00:00Z") - Date.parse(grid["startDay"] + "T00:00:00Z")) / 86400000 + 1;
     assert.equal(gridDays, grid["weeks"] * 7, "网格天数必须等于 周数 × 7");
     // 回归（用户报告：“最近一年”只显示 1 个格子）：recent 模式的统计范围必须就是整个网格，
@@ -185,18 +221,18 @@ test("10.2：全部数据端点可用且结构符合 7.5", async () => {
     }
 
     // AC-8.8：year 参数按自然年取范围并重新分桶；补齐格由 fromDay/toDay 标出。
-    const yearDaily = (await (await fetch(`${harness.base}/api/daily?year=2026&metric=tokens`, authed(harness))).json()) as Record<string, any>;
+    const yearDaily = (await (await fetch(`${harness.base}/api/daily?year=${YEAR}&metric=tokens`, authed(harness))).json()) as Record<string, any>;
     assert.equal(yearDaily["grid"]["mode"], "year");
-    assert.equal(yearDaily["grid"]["year"], 2026);
-    assert.equal(yearDaily["grid"]["fromDay"], "2026-01-01");
-    assert.equal(yearDaily["grid"]["toDay"], "2026-12-31");
-    assert.equal(yearDaily["grid"]["startDay"], "2025-12-29", "2026-01-01 所在周的周一");
-    assert.equal(yearDaily["grid"]["weeks"], 53);
+    assert.equal(yearDaily["grid"]["year"], YEAR);
+    assert.equal(yearDaily["grid"]["fromDay"], YEAR_FROM_DAY);
+    assert.equal(yearDaily["grid"]["toDay"], YEAR_TO_DAY);
+    assert.equal(yearDaily["grid"]["startDay"], YEAR_START_DAY, `${YEAR_FROM_DAY} 所在周的周一`);
+    assert.equal(yearDaily["grid"]["weeks"], YEAR_WEEKS);
     assert.equal(yearDaily["daily"].length, 1);
-    assert.equal(yearDaily["daily"][0]["day"], "2026-09-19", "该 fixture 的数据落在 2026 年");
+    assert.equal(yearDaily["daily"][0]["day"], TODAY, "会话数据落在当前自然年");
 
-    const emptyYear = (await (await fetch(`${harness.base}/api/daily?year=2020&metric=tokens`, authed(harness))).json()) as Record<string, any>;
-    assert.equal(emptyYear["grid"]["year"], 2020);
+    const emptyYear = (await (await fetch(`${harness.base}/api/daily?year=${EMPTY_YEAR}&metric=tokens`, authed(harness))).json()) as Record<string, any>;
+    assert.equal(emptyYear["grid"]["year"], EMPTY_YEAR);
     assert.equal(emptyYear["daily"].length, 0, "无数据的年份必须为空而非报错");
 
     // 10.2：非法 year 等同未提供，回退到 window 解析。

@@ -1,11 +1,10 @@
 {
-  "name": "pi-monitor",
-  "version": "1.1.0",
+  "name": "@evan7der/pi-monitor",
+  "version": "1.2.0",
   "description": "pi usage ledger and local browser dashboard (tokens, CNY cost, heatmap). Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "author": "KaaNoo",
-  "private": true,
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -13,11 +12,23 @@
     "usage",
     "cost"
   ],
+  "homepage": "https://github.com/Nana7mi-swjtu/pi-monitor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nana7mi-swjtu/pi-monitor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nana7mi-swjtu/pi-monitor/issues"
+  },
   "pi": {
     "extensions": [
       "./extensions/pi-monitor/index.ts"
     ]
   },
+  "files": [
+    "extensions/",
+    "src/"
+  ],
   "dependencies": {},
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -34,12 +45,17 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/unit/*.test.ts\" \"test/integration/*.test.ts\" \"test/contract/*.test.ts\"",
     "bench": "node --expose-gc --test test/bench/engine.bench.mjs",
     "fixtures": "node test/fixtures/write-fixtures.mjs",
     "gate": "node tools/quality-gate.mjs",
-    "check": "npm run gate && npm run typecheck && npm run test"
+    "check": "npm run gate && npm run typecheck && npm run test",
+    "pack:dry": "npm pack --dry-run --ignore-scripts",
+    "prepack": "npm run check"
   }
 }

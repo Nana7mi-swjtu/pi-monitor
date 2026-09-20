@@ -1,0 +1,81 @@
+name: publish
+
+# 推 v* 标签即发布（tag 必须与 package.json 的 version 一致）；
+# 也可在 Actions 页面手动触发（workflow_dispatch）用于重发/补发。
+#
+# 凭据二选一，两种方式都**不需要把任何密钥写进仓库文件**：
+#   ① NPM_TOKEN（公开/私有仓库都能用，但需 90 天内轮换）：仓库 Settings → Secrets and variables → Actions
+#      → New repository secret，名字填 NPM_TOKEN。值只能是在 npmjs.com 新式页面生成的
+#      Granular access token（头像 → Access Tokens → Generate New Token）：
+#      Permissions = Read and write (publish and stage)、Select Packages = All Packages、
+#      勾上 Bypass two-factor authentication（不勾则 CI 会 E403 且不会提示 OTP）、Expiration ≤ 90 天。
+#      Secrets 不进 git、日志里也会被打码。
+#   ② Trusted Publishing（最安全，无任何 token，也无需存 secret）：包已发布后到
+#      npmjs.com/package/@evan7der/pi-monitor/access → Trusted Publisher → GitHub Actions，填四个字段：
+#      组织/用户 = Nana7mi-swjtu、Repository = pi-monitor、Workflow filename = publish.yml（只写文件名）、
+#      Environment 留空；Allowed actions 里 `npm stage publish` 恒允许，要让本文件里的 `npm publish`
+#      直接发布，必须**额外允许直接 publish**（否则会变成需你人工审批的 staged publishing）。
+#      限制：只能给**已存在**的包配置（首个版本得用方式①或本地 npm publish），只支持公开仓库 + npm ≥ 11.5.1。
+#
+# 关于 provenance：GitHub 自 2023-07 起不再支持“私有仓库源码 → 公开包”的 provenance，
+# 所以本文件默认不传 --provenance。仓库公开后把下面 PROVENANCE 改成 "true" 即可（OIDC 方式则自动附带）。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance / Trusted Publishing (OIDC) 必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不用 registry-url：它会无条件写入引用 NODE_AUTH_TOKEN 的 .npmrc，空 token 会让 OIDC 方式失败。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 配置 npm 凭据（token 或 OIDC）
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # 一律用 npm 11：Trusted Publishing (OIDC) 需要 npm >= 11.5.1，新版 npm 对 granular token /
+          # 会话认证的支持也更一致（Node 22 自带的 npm 10 不满足）。
+          npm install --global npm@11
+          if [ -n "${NODE_AUTH_TOKEN}" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
+            echo "::notice::使用仓库 secret NPM_TOKEN（granular token）发布"
+          else
+            echo "::notice::未配置 NPM_TOKEN，改用 Trusted Publishing (OIDC) 发布"
+          fi
+
+      - name: 安装开发依赖（仅类型检查需要）
+        run: npm ci --include=dev
+
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag 与 package.json 的 $version 不一致"
+            exit 1
+          fi
+
+      # npm publish 会触发 prepack = npm run check（质量门 + tsc --noEmit + 全部测试），
+      # 因此只有全绿的提交才可能被发布出去。
+      - name: 发布到 npm
+        env:
+          # 仅当 GitHub 仓库是公开仓库时可设为 "true"；私有仓库必须保持 "false"。
+          PROVENANCE: "false"
+        run: |
+          if [ "${PROVENANCE}" = "true" ]; then
+            npm publish --provenance --access public
+          else
+            npm publish --access public
+          fi

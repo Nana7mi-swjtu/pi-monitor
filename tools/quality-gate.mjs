@@ -10,10 +10,13 @@
  *   6) 无 '7.2' 硬编码汇率常量、无面向用户的 '$' 金额符号（P-13）
  *   7) 无 skip/todo 测试（P-5）
  *   8) 账本字段集合与 PRD 7.3 完全一致（AC-14.1）
+ *   9) 纯逻辑测试不 import 宿主包（NFR-1）
+ *  10) 可发布性：npm 元数据 + pi manifest + `npm pack` 产物覆盖扩展入口的全部相对依赖（G-6 / NFR-9）
  *
  * 用法：node tools/quality-gate.mjs
  */
 
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -273,6 +276,115 @@ await check("NFR-1 单元测试不 import 宿主包", () => {
     if (/"@earendil-works\//.test(body) || /"typebox"/.test(body)) offenders.push(rel(file));
   }
   return offenders.length === 0 ? true : offenders.join(", ");
+});
+
+/**
+ * 10) G-6 / NFR-9：可发布性。
+ *
+ * 安装方式从「本地路径 / 复制」改成一般方式后，发布产物本身就是交付物：
+ * 缺字段、`private`、`files` 白名单漏目录、`pi.extensions` 指向不存在的文件，
+ * 都会让 `pi install npm:<pkg>` / `npm install` 在用户机器上失败，而本地跑测试发现不了。
+ */
+function readPackageJson() {
+  return JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+}
+
+await check("G-6 可发布性：npm 元数据与 pi manifest 完整", () => {
+  const pkg = readPackageJson();
+  // npm 上 `pi-monitor` 已被他人占用（miclivs，macOS 后台进程扩展），发布会被 403 拒绝。
+  if (pkg.name === "pi-monitor") return "npm 上 pi-monitor 已被他人占用，请改用 scoped 名（@scope/pi-monitor）或其它未占用名";
+  if (typeof pkg.name !== "string" || pkg.name.trim() === "") return "package.json 缺少 name";
+  if (pkg.private === true) return "package.json 仍是 private，无法发布到 npm";
+  if (typeof pkg.version !== "string" || !/^\d+\.\d+\.\d+/.test(pkg.version)) return "package.json 的 version 不是 semver";
+  if (typeof pkg.license !== "string") return "package.json 未声明 license";
+  if (typeof pkg.repository?.url !== "string") return "package.json 缺少 repository.url";
+  if (typeof pkg.homepage !== "string") return "package.json 缺少 homepage";
+  if (!Array.isArray(pkg.keywords) || !pkg.keywords.includes("pi-package")) return "keywords 缺少 pi-package（pi 包画廊按该标签收录）";
+  if (pkg.engines?.node === undefined) return "package.json 缺少 engines.node";
+  if (pkg.publishConfig?.access !== "public") return "package.json 缺少 publishConfig.access = public";
+  if (typeof pkg.scripts?.prepack !== "string") return "package.json 缺少 prepack 脚本（发布前必须跑 npm run check）";
+
+  const manifest = pkg.pi?.extensions;
+  if (!Array.isArray(manifest) || manifest.length === 0) return "pi.extensions 为空";
+  for (const entry of manifest) {
+    if (!fs.existsSync(path.join(root, entry))) return `pi.extensions 指向不存在的路径：${entry}`;
+  }
+
+  const files = pkg.files;
+  if (!Array.isArray(files) || files.length === 0) return "缺少 files 白名单（否则会把 test/node_modules 一起发出去）";
+  const normalized = files.map((item) => String(item).replace(/^\.[/\\]/, "").replace(/[/\\]+$/, ""));
+  for (const required of ["extensions", "src"]) {
+    if (!normalized.includes(required)) return `files 白名单缺少 ${required}（运行时必需）`;
+  }
+  return true;
+});
+
+/** 从源码里收集相对 import 目标（本级相对 specifier）。 */
+function relativeImportSpecifiers(fileRel) {
+  const body = fs.readFileSync(path.join(root, fileRel), "utf8");
+  const patterns = [
+    /\bfrom\s*["'](\.[^"']+)["']/g,
+    /\bimport\s*\(\s*["'](\.[^"']+)["']\s*\)/g,
+    /^\s*import\s*["'](\.[^"']+)["']/gm,
+  ];
+  const specifiers = new Set();
+  for (const pattern of patterns) {
+    for (const match of body.matchAll(pattern)) specifiers.add(match[1]);
+  }
+  return [...specifiers];
+}
+
+/** npm pack --dry-run 的产物文件清单（相对包根，POSIX 分隔符）。 */
+function packedFileList() {
+  // --ignore-scripts：避免 prepack 再次触发本质量门（递归）。
+  const stdout = execSync("npm pack --dry-run --json --ignore-scripts", {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const parsed = JSON.parse(stdout);
+  const files = Array.isArray(parsed) ? parsed[0]?.files : undefined;
+  if (!Array.isArray(files)) throw new Error("npm pack --dry-run --json 输出中缺少 files");
+  return new Set(files.map((file) => String(file.path).replace(/\\/g, "/")));
+}
+
+await check("G-6 打包产物覆盖扩展入口及其全部相对依赖", () => {
+  const pkg = readPackageJson();
+  let packed;
+  try {
+    packed = packedFileList();
+  } catch (error) {
+    return `npm pack --dry-run 失败：${error instanceof Error ? error.message.split("\n")[0] : String(error)}`;
+  }
+
+  for (const required of ["package.json", "README.md", "LICENSE"]) {
+    if (!packed.has(required)) return `打包产物缺少 ${required}`;
+  }
+
+  // 从每个 pi manifest 入口出发做一次传递闭包：入口与它 import 到的每个仓库内文件都必须进包。
+  const entries = pkg.pi?.extensions ?? [];
+  const seen = new Set();
+  const queue = entries.map((entry) => String(entry).replace(/^\.\//, "").replace(/\\/g, "/"));
+  while (queue.length > 0) {
+    const fileRel = queue.shift();
+    if (seen.has(fileRel)) continue;
+    seen.add(fileRel);
+    if (!packed.has(fileRel)) return `打包产物缺少 ${fileRel}（由 ${entries.join(", ")} 依赖）`;
+    for (const specifier of relativeImportSpecifiers(fileRel)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(fileRel), specifier));
+      if (!target.startsWith("..")) queue.push(target);
+    }
+  }
+
+  // 交付面收敛（NFR-9 + 仓库卫生）：只允许扩展入口与 src，外加 npm 恒包含的元数据文件。
+  // 本机非公开的开发记录（PRD.md / docs/ / CHANGELOG.md）绝不能随包发出。
+  const alwaysIncluded = new Set(["package.json", "README.md", "LICENSE"]);
+  for (const file of packed) {
+    if (alwaysIncluded.has(file)) continue;
+    if (file.startsWith("extensions/") || file.startsWith("src/")) continue;
+    return `打包产物不应包含 ${file}`;
+  }
+  return true;
 });
 
 for (const line of checks) process.stdout.write(`${line}\n`);
